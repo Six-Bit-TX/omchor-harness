@@ -1,0 +1,24 @@
+{
+  "name": "@local/dsh-client-ui-video-preview",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Video playback in the dsh Web right Sidebar, read chunk by chunk.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-sidebar-right",
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-api-workspace-files"
+      ]
+    }
+  }
+}

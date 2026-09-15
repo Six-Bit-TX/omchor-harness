@@ -1,0 +1,432 @@
+SUPERSEDED - DO NOT APPLY
+=========================
+
+This patch edits the shipped document-preview bundle inside the DSH install.
+It has been replaced by a real client plugin that needs no shipped file to be
+touched: see dsh-video-preview.md. The shipped bundle was restored to its
+original bytes (sha256 dac2e99f7952bf1704fa7496cf26d3e26bcf39f53d299dcf7e7d0ca170784290),
+and video playback now comes from
+~/.dsh/profiles/web/node_modules/@local/dsh-client-ui-video-preview/.
+
+The patch is kept only as a record of the earlier approach, and as a fallback
+if the plugin route is ever unavailable.
+
+DSH video preview in the sidebar - source patch
+===============================================
+
+Makes the DSH Web sidebar preview play video files (mp4, m4v, webm, ogv, ogg,
+mov, mkv) with the browser's own player, and removes the 32 MiB ceiling that
+previously made `readAll` refuse the large files this workspace produces.
+
+Target file (the built client half of the Sidebar document-preview plugin):
+  node_modules/@deepseek-ai/dsh-client-ui-sidebar-documentpreview/lib/client.js
+  relative to the DSH install; here that is
+  /home/xiongti1/.npm/_npx/1e7f6d9597241db0/
+
+Apply from that package directory:
+  patch -p0 --dry-run < dsh-video-preview.patch   # check
+  patch -p0 < dsh-video-preview.patch             # apply
+
+What it changes
+  1. createReadAllBytes(): complete-byte previews read the file in the Host's
+     bounded byte windows (readBytes, 2 MiB default) and assemble them, so a
+     46.9 MB mp4 previews where readAll's 32 MiB cap used to refuse it. Small
+     files still cost one window; any window failure falls back to readAll, and
+     an aborted read stops without a second RPC.
+  2. documentFileBytes(): accepts already-native bytes, so assembly avoids a
+     base64 round trip.
+  3. A per-tab read-progress action plus a percentage label while bytes load.
+  4. A video renderer: metadata (builtin band, bytes-complete), zh/en labels,
+     and a body that mints a Blob URL and renders <video controls>. Its Blob URL
+     is revoked on unmount or replacement.
+  5. Existing renderers (text, Markdown, code, image, PDF, HTML) keep their
+     registrations and loading modes; the "open with" menu can still switch a
+     video back to plain text.
+
+Written 2026-09-15 by the DSH agent session in
+/home/xiongti1/tracking/swarm-tracker.
+
+--- client.js.orig
++++ client.js
+@@ -1154,7 +1154,73 @@
+ 		function documentFileBytes(file) {
+ 			return {
+ 				...file,
+-				data: Uint8Array.from(atob(file.data), (character) => character.charCodeAt(0))
++				data: typeof file.data === "string" ? Uint8Array.from(atob(file.data), (character) => character.charCodeAt(0)) : file.data
++			};
++		}
++		/**
++		* Bind the complete-byte read to one Remote face through bounded byte windows.
++		*
++		* `readAll` refuses every file above the Host's complete-file cap, which would
++		* put large videos and PDFs permanently out of reach. Windows are assembled
++		* here instead; the ordinary complete read remains the fallback for any window
++		* failure, so a small file costs the same single call it always did.
++		* @param remote - the Client Remote carrying the `workspaceFiles` namespace.
++		* @returns the complete-byte read the face performs.
++		*/
++		function createReadAllBytes(remote) {
++			return async (file, signal, onProgress) => {
++				try {
++					const chunks = [];
++					let offset = 0;
++					let version;
++					let absolutePath;
++					let total;
++					for (;;) {
++						const result = await remote.workspaceFiles.readBytes(file.sessionId, file.path, { offset }, signal);
++						if (!result.ok) break;
++						const value = result.value;
++						if (version === void 0) version = value.version;
++						else if (value.version !== version) throw new Error("ui-sidebar-documentpreview: the file changed while it was being read");
++						absolutePath = value.absolutePath;
++						if (value.bytes !== void 0) total = value.bytes;
++						const chunk = Uint8Array.from(atob(value.data), (character) => character.charCodeAt(0));
++						chunks.push(chunk);
++						offset += chunk.byteLength;
++						onProgress?.(offset, total);
++						if (value.eof || chunk.byteLength === 0) {
++							const size = chunks.reduce((sum, part) => sum + part.byteLength, 0);
++							const data = new Uint8Array(size);
++							let at = 0;
++							for (let index = 0; index < chunks.length; index++) {
++								data.set(chunks[index], at);
++								at += chunks[index].byteLength;
++								chunks[index] = void 0;
++							}
++							return {
++								ok: true,
++								value: {
++									absolutePath,
++									version,
++									bytes: size,
++									offset: 0,
++									data,
++									eof: true
++								}
++							};
++						}
++					}
++				} catch {
++					/* A failed or inconsistent window falls through to the complete read. */
++				}
++				if (signal?.aborted === true) return {
++					ok: false,
++					error: {
++						code: "gateway/internal",
++						message: "ui-sidebar-documentpreview: the read was cancelled",
++						details: {}
++					}
++				};
++				return remote.workspaceFiles.readAll(file.sessionId, file.path, signal);
+ 			};
+ 		}
+ 		//#endregion
+@@ -1435,6 +1501,7 @@
+ 			const loaded = (0, react.useMemo)(() => loadedPages(pages ?? {}), [pages]);
+ 			const loadedThrough = lastLineLoaded(loaded);
+ 			const hasContent = loaded.length > 0 || current?.complete !== void 0;
++			const progress = current?.progress;
+ 			storedScrollTopRef.current = state?.scrollTop ?? 0;
+ 			const bindBody = (0, react.useCallback)((body) => {
+ 				const previous = bodyRef.current;
+@@ -1659,7 +1726,7 @@
+ 						children: [
+ 							!hasContent && current?.failure === void 0 && (0, react_jsx_runtime.jsx)(LoadingIndicator, {
+ 								className: TextPreview_module_css_default.statusLine,
+-								label: t("loading")
++								label: progress === void 0 || progress.total === void 0 ? t("loading") : t("loadingProgress", { percent: Math.min(99, Math.floor(progress.loaded / progress.total * 100)) })
+ 							}),
+ 							content !== void 0 && renderSlot("sidebar.right.tab.document", {
+ 								resourceAddress: tab.contentId,
+@@ -1833,7 +1900,9 @@
+ 					const reads = modeOf(tabId, signal, "bytes-complete");
+ 					const { generation } = reads;
+ 					actions.loading(tabId, "bytes-complete", observedVersion);
+-					readAll(file, signal).then((result) => {
++					readAll(file, signal, (loaded, total) => {
++						actions.progress(tabId, loaded, total);
++					}).then((result) => {
+ 						if (signal.aborted || reads.generation !== generation) return;
+ 						if (!result.ok) {
+ 							actions.failed(tabId, result.error);
+@@ -1925,8 +1994,22 @@
+ 						if (state.version === void 0 && !state.loading) state.observedVersion = observedVersion;
+ 						state.loading = true;
+ 						state.failure = void 0;
++						state.progress = void 0;
+ 						if (mode !== void 0) state.mode = mode;
+ 					},
++					/**
++					* Record how much of a complete-byte read has been assembled so far.
++					* @param d - draft state.
++					* @param tabId - the tab being drawn.
++					* @param loaded - bytes assembled; windows arrive in order.
++					* @param total - the file's reported size, absent when the Host reports none.
++					*/
++					progress: (d, tabId, loaded, total) => {
++						bucket(d, tabId).progress = {
++							loaded,
++							total
++						};
++					},
+ 					/** @param d - draft. @param tabId - owning tab. @param file - complete byte result for this view. */
+ 					complete: (d, tabId, file) => {
+ 						const state = bucket(d, tabId);
+@@ -1935,6 +2018,7 @@
+ 						state.eof = true;
+ 						state.loading = false;
+ 						state.failure = void 0;
++						state.progress = void 0;
+ 					},
+ 					/**
+ 					* Keep one page. A page from a newer file version invalidates the pages
+@@ -1965,6 +2049,7 @@
+ 						const state = bucket(d, tabId);
+ 						state.loading = false;
+ 						state.failure = failure;
++						state.progress = void 0;
+ 					},
+ 					/**
+ 					* Drop every page, keeping the view, for a re-read from the first line.
+@@ -1980,6 +2065,7 @@
+ 						state.observedVersion = void 0;
+ 						state.loading = false;
+ 						state.failure = void 0;
++						state.progress = void 0;
+ 					},
+ 					/**
+ 					* Record where one tab's body is scrolled to.
+@@ -2034,6 +2120,7 @@
+ 		/** Simplified Chinese dictionary and key-set source of truth. */
+ 		const zh$5 = {
+ 			loading: "正在读取…",
++			loadingProgress: "正在读取… {percent}%",
+ 			loadMore: "加载更多",
+ 			changed: "文件已更新，当前显示为旧内容。",
+ 			reloadNow: "重新载入",
+@@ -2055,6 +2142,7 @@
+ 		/** English dictionary, checked against the Chinese key set. */
+ 		const en$5 = {
+ 			loading: "Reading…",
++			loadingProgress: "Reading… {percent}%",
+ 			loadMore: "Load more",
+ 			changed: "The file has changed, showing the previous content.",
+ 			reloadNow: "Reload",
+@@ -26909,6 +26997,198 @@
+ 				locale: NS$1
+ 			}, CodeBody)));
+ 		}
++		//#region \0dsh-css:/home/runner/work/deepseek-harness/deepseek-harness/packages/client/ui-sidebar-documentpreview/src/client/video/VideoBody.module.css.mjs
++		const VIDEO_CSS = ".VIDP_frame{box-sizing:border-box;width:100%;min-height:100%;font-family:var(--dsw-font-family,sans-serif);white-space:normal;padding:8px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px}.VIDP_video{flex:none;width:auto;height:auto;max-width:100%;margin:auto;background:#000;border-radius:6px;display:block}.VIDP_video[hidden]{display:none}.VIDP_status{box-sizing:border-box;width:100%;color:var(--dsw-alias-label-secondary);white-space:normal;justify-content:center;align-items:center;margin:0;padding:10px;font-size:13px;line-height:1.5;display:flex}";
++		const VIDEO_CSS_TAG_ID = "@deepseek-ai/dsh-client-ui-sidebar-documentpreview/VideoBody.module.css";
++		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(VIDEO_CSS_TAG_ID) + "]") === null) {
++			const videoCssTag = document.createElement("style");
++			videoCssTag.dataset.plugin = "@deepseek-ai/dsh-client-ui-sidebar-documentpreview";
++			videoCssTag.dataset.pluginCss = VIDEO_CSS_TAG_ID;
++			videoCssTag.textContent = VIDEO_CSS;
++			document.head.appendChild(videoCssTag);
++		}
++		var VideoBody_module_css_default = {
++			"frame": "VIDP_frame",
++			"video": "VIDP_video",
++			"status": "VIDP_status"
++		};
++		//#endregion
++		//#region lib/types/client/video/VideoBody.js
++		/** Media types the builtin video body hands to the browser's own player. */
++		const VIDEO_MEDIA_TYPES = {
++			mp4: "video/mp4",
++			m4v: "video/mp4",
++			webm: "video/webm",
++			ogv: "video/ogg",
++			ogg: "video/ogg",
++			mov: "video/quicktime",
++			mkv: "video/x-matroska"
++		};
++		/**
++		* Resolve a supported filename to the media type assigned to its Blob.
++		* @param path - decoded workspace file path.
++		* @returns the video media type, or undefined for an unregistered suffix.
++		*/
++		function videoMediaType(path) {
++			const normalized = path.replaceAll("\\", "/");
++			const name = normalized.slice(normalized.lastIndexOf("/") + 1).toLowerCase();
++			return VIDEO_MEDIA_TYPES[name.slice(name.lastIndexOf(".") + 1)];
++		}
++		/**
++		* Present complete video bytes through a Blob URL and the browser's own player.
++		*
++		* The bytes come from the shared complete-byte read, which assembles bounded
++		* windows first, so a file past the Host's single-read cap still plays. Seeking
++		* inside a Blob URL stays local: no network range request is involved.
++		* @param props - document bytes, resource identity, and locale.
++		* @returns a controls-bearing video element, or the reason it cannot show.
++		*/
++		function VideoBody({ content, resourceAddress, t }) {
++			const path = (0, react.useMemo)(() => hostFileOf(resourceAddress).path, [resourceAddress]);
++			const mediaType = videoMediaType(path);
++			const data = content !== void 0 && content.kind === "bytes" ? content.data : void 0;
++			const [source, setSource] = (0, react.useState)();
++			(0, react.useEffect)(() => {
++				if (data === void 0 || mediaType === void 0) return;
++				let url;
++				try {
++					url = URL.createObjectURL(new Blob([data], { type: mediaType }));
++					setSource({
++						kind: "ready",
++						data,
++						mediaType,
++						url
++					});
++				} catch {
++					setSource({
++						kind: "failed",
++						data,
++						mediaType
++					});
++				}
++				return () => {
++					if (url !== void 0) URL.revokeObjectURL(url);
++				};
++			}, [data, mediaType]);
++			if (data === void 0 || mediaType === void 0) return (0, react_jsx_runtime.jsx)("p", {
++				className: VideoBody_module_css_default.status,
++				role: "alert",
++				children: t("unsupported")
++			});
++			if (source?.data !== data || source.mediaType !== mediaType) return (0, react_jsx_runtime.jsx)(LoadingIndicator, {
++				className: VideoBody_module_css_default.status,
++				label: t("loading")
++			});
++			if (source.kind === "failed") return (0, react_jsx_runtime.jsx)("p", {
++				className: VideoBody_module_css_default.status,
++				role: "alert",
++				children: t("failed")
++			});
++			const { name } = pathPartsOf(path);
++			return (0, react_jsx_runtime.jsx)(LoadedVideo, {
++				url: source.url,
++				name,
++				t
++			}, source.url);
++		}
++		/** The player itself: the bytes already reached a Blob URL, so only the codec can still fail. */
++		function LoadedVideo({ url, name, t }) {
++			const [state, setState] = (0, react.useState)("loading");
++			return (0, react_jsx_runtime.jsxs)("div", {
++				className: VideoBody_module_css_default.frame,
++				"data-video-preview": true,
++				children: [
++					state === "loading" && (0, react_jsx_runtime.jsx)(LoadingIndicator, {
++						className: VideoBody_module_css_default.status,
++						label: t("loading")
++					}),
++					state === "failed" && (0, react_jsx_runtime.jsx)("p", {
++						className: VideoBody_module_css_default.status,
++						role: "alert",
++						children: t("failed")
++					}),
++					(0, react_jsx_runtime.jsx)("video", {
++						className: VideoBody_module_css_default.video,
++						src: url,
++						controls: true,
++						preload: "metadata",
++						playsInline: true,
++						"aria-label": t("preview", { name }),
++						hidden: state !== "ready",
++						onLoadedData: () => {
++							setState("ready");
++						},
++						onError: () => {
++							setState("failed");
++						}
++					})
++				]
++			});
++		}
++		//#endregion
++		//#region lib/types/client/video/locales.js
++		/** Locale-owned video renderer labels and status text. */
++		const zh$7 = {
++			title: "视频",
++			preview: "视频：{name}",
++			loading: "正在打开视频…",
++			failed: "无法播放这个视频，浏览器可能不支持它的封装格式或编码。",
++			unsupported: "视频预览需要完整文件内容。"
++		};
++		/** English dictionary with the same keys as the Chinese dictionary. */
++		const en$7 = {
++			title: "Video",
++			preview: "Video: {name}",
++			loading: "Opening video…",
++			failed: "This video could not be played; the browser may not support its container or codec.",
++			unsupported: "Video preview requires the complete file contents."
++		};
++		//#endregion
++		//#region lib/types/client/video/index.js
++		/** Video implementation identity, shared by metadata and the keyed slot. */
++		const VIDEO_BODY_ID = "@deepseek-ai/dsh-client-ui-sidebar-documentpreview/video";
++		/** File suffixes rendered by the builtin video body. */
++		const VIDEO_EXTENSIONS = [
++			"mp4",
++			"m4v",
++			"webm",
++			"ogv",
++			"ogg",
++			"mov",
++			"mkv"
++		];
++		/**
++		* Describe the builtin video renderer independently from its keyed body slot.
++		* @param title - locale-owned implementation name.
++		* @returns metadata for complete video files.
++		*/
++		function videoBodyDefinition(title) {
++			return {
++				id: VIDEO_BODY_ID,
++				extensions: VIDEO_EXTENSIONS,
++				priority: "builtin",
++				title,
++				loading: "bytes-complete",
++				wrap: false
++			};
++		}
++		/**
++		* Register the video dictionary, metadata, and body with reversible effects.
++		* @param ctx - owning plugin context.
++		*/
++		function apply$7(ctx) {
++			const t = ctx.locale.bind("sidebarVideo");
++			ctx.effect(() => ctx.locale.register("sidebarVideo", {
++				zh: zh$7,
++				en: en$7
++			}), "document-video: dictionaries");
++			ctx.effect(() => ctx.documentPreviews.register(videoBodyDefinition(() => t("title"))), "document-video: metadata");
++			ctx.effect(() => ctx.slots.inject("sidebar.right.tab.document", () => ctx.slots.register({
++				name: "sidebar.right.tab.document",
++				key: VIDEO_BODY_ID,
++				locale: "sidebarVideo"
++			}, VideoBody)), "document-video: body");
++		}
+ 		//#endregion
+ 		//#region lib/types/client/index.js
+ 		/** This package's copy namespace. */
+@@ -26938,7 +27218,7 @@
+ 				en: en$5
+ 			}), "ui-sidebar-documentpreview: dictionaries");
+ 			const store = createTextStore();
+-			const face = textFace(createReadPage(ctx.remote), (file, signal) => ctx.remote.workspaceFiles.readAll(file.sessionId, file.path, signal));
++			const face = textFace(createReadPage(ctx.remote), createReadAllBytes(ctx.remote));
+ 			const source = {
+ 				getSnapshot: previews.getSnapshot,
+ 				subscribe: previews.subscribe
+@@ -26968,6 +27248,7 @@
+ 			apply$3(ctx);
+ 			apply$2(ctx);
+ 			apply$1(ctx);
++			apply$7(ctx);
+ 		}
+ 		//#endregion
+ 		exports.apply = apply;

@@ -1,0 +1,74 @@
+# Raises @deepseek-ai/dsh-session-reference maxReferences from 3 to 10.
+#
+# Record of the edit applied to 0.1.5-rc.2 on 2026-09-15T08:06:00Z.
+# Re-apply from the package directory with:
+#
+#   patch -p1 < session-reference-max-references.patch
+#
+# patches/apply.sh is version-tolerant and does the same thing.
+--- a/lib/index.js
++++ b/lib/index.js
+@@ -91,7 +91,7 @@
+ //#region lib/types/config.js
+ /** Configuration and stable diagnostics for session references. */
+ /** Hard maximum references accepted by one message. */
+-const MAX_REFERENCES = 3;
++const MAX_REFERENCES = 10;
+ /** Default number of discovery candidates returned to a host. */
+ const DEFAULT_CANDIDATE_LIMIT = 50;
+ /** Minimum automatic UTF-8 budget for one rendered reference JSON object. */
+@@ -428,7 +428,7 @@
+ 		}
+ 		static inject = ["sessionQuery"];
+ 		static Config = z.object({
+-			maxReferences: z.number().step(1).min(1).max(3).default(3),
++			maxReferences: z.number().step(1).min(1).max(MAX_REFERENCES).default(MAX_REFERENCES),
+ 			candidateLimit: z.number().step(1).min(1).default(50),
+ 			maxReferenceBytes: z.number().step(1).min(1),
+ 			referenceContextFraction: z.number().min(0).max(1).default(DEFAULT_REFERENCE_CONTEXT_FRACTION)
+@@ -438,7 +438,7 @@
+ 		constructor(ctx, config = {}) {
+ 			super(ctx, "sessionReferenceResolver");
+ 			this.config = {
+-				maxReferences: config.maxReferences ?? 3,
++				maxReferences: config.maxReferences ?? MAX_REFERENCES,
+ 				candidateLimit: config.candidateLimit ?? 50,
+ 				maxReferenceBytes: config.maxReferenceBytes,
+ 				referenceContextFraction: config.referenceContextFraction ?? DEFAULT_REFERENCE_CONTEXT_FRACTION
+@@ -451,7 +451,7 @@
+ 				const value = this.config[name];
+ 				if (value !== void 0 && (!Number.isSafeInteger(value) || value <= 0)) throw new SessionReferenceError(`session-reference: ${name} must be a positive safe integer`, "SESSION_REFERENCE_INVALID_CONFIG");
+ 			}
+-			if (this.config.maxReferences > 3) throw new SessionReferenceError(`session-reference: maxReferences must not exceed 3`, "SESSION_REFERENCE_INVALID_CONFIG");
++			if (this.config.maxReferences > MAX_REFERENCES) throw new SessionReferenceError(`session-reference: maxReferences must not exceed ${MAX_REFERENCES}`, "SESSION_REFERENCE_INVALID_CONFIG");
+ 			if (!(this.config.referenceContextFraction >= 0 && this.config.referenceContextFraction <= 1)) throw new SessionReferenceError("session-reference: referenceContextFraction must be between zero and one", "SESSION_REFERENCE_INVALID_CONFIG");
+ 			ctx.on("system-prompt/assemble", async (_assembly, context, next) => {
+ 				const assembly = await next();
+--- a/lib/types/config.js
++++ b/lib/types/config.js
+@@ -1,6 +1,6 @@
+ /** Configuration and stable diagnostics for session references. */
+ /** Hard maximum references accepted by one message. */
+-export const MAX_REFERENCES = 3;
++export const MAX_REFERENCES = 10;
+ /** Default number of discovery candidates returned to a host. */
+ export const DEFAULT_CANDIDATE_LIMIT = 50;
+ /** Minimum automatic UTF-8 budget for one rendered reference JSON object. */
+--- a/lib/types/config.d.ts
++++ b/lib/types/config.d.ts
+@@ -1,13 +1,13 @@
+ /** Configuration and stable diagnostics for session references. */
+ /** Hard maximum references accepted by one message. */
+-export declare const MAX_REFERENCES = 3;
++export declare const MAX_REFERENCES = 10;
+ /** Default number of discovery candidates returned to a host. */
+ export declare const DEFAULT_CANDIDATE_LIMIT = 50;
+ /** Minimum automatic UTF-8 budget for one rendered reference JSON object. */
+ export declare const DEFAULT_MAX_REFERENCE_BYTES = 65536;
+ /** Session-reference service configuration. */
+ export interface Config {
+-    /** Maximum distinct source sessions referenced by one message, from one to three. */
++    /** Maximum distinct source sessions referenced by one message, from one to 10. */
+     maxReferences?: number;
+     /** Default host candidate-list limit. */
+     candidateLimit?: number;

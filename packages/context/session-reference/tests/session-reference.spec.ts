@@ -12,6 +12,7 @@ import SessionReferenceResolver, {
   decodeSessionReferenceUri,
   encodeSessionReferenceUri,
   formatSessionReferenceMention,
+  MAX_REFERENCES,
   parseSessionReferenceText,
   type Config,
   type SessionReferenceErrorCode,
@@ -1211,7 +1212,7 @@ describe('session reference discovery and preparation', () => {
     const oversizedCtx = new Context()
     await oversizedCtx.plugin(SessionStore)
     await oversizedCtx.plugin(TestSessionQueryEngine)
-    expect(() => new SessionReferenceResolver(oversizedCtx, { maxReferences: 4 }))
+    expect(() => new SessionReferenceResolver(oversizedCtx, { maxReferences: MAX_REFERENCES + 1 }))
       .toThrow(expectCode('SESSION_REFERENCE_INVALID_CONFIG'))
 
     const defaultCtx = new Context()

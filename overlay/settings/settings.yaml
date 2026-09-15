@@ -1,0 +1,54 @@
+ui-onboarding:
+  welcomeNoticeVersion: 2026-08-13.1
+agent-default-model:
+  provider: deepseek-official
+  model: deepseek-flash
+  reasoningEffort: high
+
+# 让 subagent / subagent_fork 的调用可以指定 provider + model。
+# enabled 为 true 时 allowedModels 不能为空，否则 Host 会拒绝该配置。
+# 路由是精确匹配（provider + model），未列入的模型无法被子 agent 选用。
+subagent-model-selection:
+  enabled: true
+  allowedModels:
+    - provider: kimi-coding
+      model: k3
+    - provider: kimi-coding
+      model: k3-256k
+    - provider: glm
+      model: glm-4.5-air
+
+llm-pi-ai:
+  providers:
+    # 复用 pi-ai 内置目录路由。不写 api / baseURL / models，目录负责：
+    #   api: anthropic-messages, baseURL: https://api.kimi.com/coding
+    #   k3: reasoning=true, thinkingLevelMap {low, high, max}
+    #   compat: forceAdaptiveThinking / allowEmptySignature
+    # 自己声明 api: openai-completions 会绕过目录，模型推理能力退化为 false。
+    kimi-coding:
+      displayName: Kimi (Coding API)
+      apiKeyEnv: KIMI_API_KEY
+    glm:
+      displayName: GLM (Zhipu)
+      apiKeyEnv: ZHIPU_API_KEY
+      api: openai-completions
+      baseURL: https://open.bigmodel.cn/api/paas/v4
+      models:
+        - id: glm-4.6
+          name: GLM-4.6
+          contextWindow: 204800
+          maxTokens: 131072
+        - id: glm-4.5
+          name: GLM-4.5
+          contextWindow: 131072
+          maxTokens: 98304
+        - id: glm-4.5-air
+          name: GLM-4.5 Air
+          contextWindow: 131072
+          maxTokens: 98304
+        - id: glm-4.5-flash
+          name: GLM-4.5 Flash (free)
+          contextWindow: 131072
+          maxTokens: 98304
+locale:
+  preference: zh

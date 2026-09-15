@@ -1,0 +1,76 @@
+# Your patch layer for this dsh profile, applied after every bundle layer:
+# a top-level YAML array of loader patch entries (id-targeted config
+# overrides, disables, and insert lists; `!!js` expressions allowed).
+
+# Video playback in the right Sidebar, as two plugins and no shipped patch.
+#
+# `ui-video-preview` is the browser half: a tab type for video addresses whose
+# body hands a range URL to the browser's own player.
+#
+# `ui-video-preview-routes` is the host half: one authenticated
+# `GET/HEAD /api/video-preview` route on Connection's shared channel that serves
+# the file with byte ranges. The player streams through it, so playback starts on
+# the first bytes, a seek anywhere is one more request, and a 2x rate just pulls
+# data faster — no complete file is ever buffered, here or on the wire, and no
+# complete-file cap applies.
+#
+# Both packages live beside this file, under node_modules/@local/, so the rows
+# resolve through the profile's own module tree. Remove both rows to turn it off.
+- insert:
+    - id: ui-video-preview
+      name: '@local/dsh-client-ui-video-preview'
+    - id: ui-video-preview-routes
+      name: '@local/dsh-video-preview-routes'
+
+# An interactive terminal in the right Sidebar, again as one plugin with a
+# browser half and a host half.
+#
+# `ui-sidebar-terminal` is the browser half: a page tab type ("terminal") whose
+# capsule sits on the guide page beside "Workspace files", rendering a vendored
+# xterm.js.
+#
+# The same package's node half owns the PTY: it spawns a shell through the
+# subprocess terminal primitive in the Session's workspace and answers six
+# authenticated `/api/terminal.*` routes — open, stream (Server-Sent Events of
+# the PTY's bytes, resumable from a byte offset), resize, input, signal, and
+# close — plus the vendored renderer assets. Output is bounded per session, so a
+# reloaded page resumes instead of replaying, and a dropped stream reconnects
+# without losing output.
+- insert:
+    - id: ui-sidebar-terminal
+      name: '@local/dsh-client-ui-sidebar-terminal'
+
+# Subagent fan-out: how many children this Session's work is split across, as
+# one plugin with a browser half and a host half.
+#
+# The browser half is a compact selector in the composer tool row, immediately
+# left of the model control (off, or 3–10). It mirrors the choice in
+# localStorage and publishes it to `POST /api/subagent-fanout`.
+#
+# The node half holds the per-session budget and installs a scoped
+# system-prompt section on `agent/created` telling the agent to decompose the
+# work into that many independent workstreams and dispatch them together in one
+# assistant message with `run_in_background: true`. A Session that never touches
+# the selector gets an empty section, so its prompt is unchanged.
+- insert:
+    - id: ui-subagent-fanout
+      name: '@local/dsh-subagent-fanout'
+
+# Expandable subagent subsessions, again as one plugin with a browser half and a
+# host half.
+#
+# `ui-subagent-subsession` is the browser half: it registers the keyed
+# `tool.call.toolview` rows for `subagent`, `subagent_fork`, and `send_message`,
+# so a delegation row expands into the child's own reasoning, tool calls with
+# result previews, and text, in order. The header carries the child's model and
+# effort, its live duration, and its session id, with the brief it was given one
+# disclosure away.
+#
+# The same package's node half folds that transcript from the child's recorded
+# log through `ctx.sessionQuery` and answers one authenticated
+# `GET /api/subagent-subsession?session=<childId>`; an expanded, still-running
+# card polls it, so the subsession grows in place. Nothing here is model-visible.
+- insert:
+    - id: ui-subagent-subsession
+      name: '@local/dsh-client-ui-subagent-subsession'
+

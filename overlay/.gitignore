@@ -1,0 +1,12 @@
+# Nothing here is generated; the overlay is hand-written source.
+node_modules/
+dist/
+build/
+
+# Never commit state or credentials, wherever this repo is used from.
+sessions/
+attachments/
+.credentials.yaml
+.git-credentials
+*.log
+.DS_Store

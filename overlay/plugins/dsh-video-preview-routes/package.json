@@ -1,0 +1,12 @@
+{
+  "name": "@local/dsh-video-preview-routes",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Authenticated byte-range route that lets the browser stream a workspace video.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  }
+}

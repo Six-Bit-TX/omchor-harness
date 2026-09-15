@@ -2160,7 +2160,7 @@ export type JournalMode = 'wal' | 'delete' | 'truncate' | 'persist'
 ```ts config-catalog
 /** Session-reference service configuration. */
 export interface Config {
-  /** Maximum distinct source sessions referenced by one message, from one to three. */
+  /** Maximum distinct source sessions referenced by one message, from one to 10. */
   maxReferences?: number
   /** Default host candidate-list limit. */
   candidateLimit?: number

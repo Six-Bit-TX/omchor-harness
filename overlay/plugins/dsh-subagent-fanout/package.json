@@ -1,0 +1,23 @@
+{
+  "name": "@local/dsh-subagent-fanout",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Composer fan-out selector plus a per-session delegation budget injected into the model's system prompt.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-api-session-controller"
+      ]
+    }
+  }
+}

@@ -1,7 +1,7 @@
 /** Configuration and stable diagnostics for session references. */
 
 /** Hard maximum references accepted by one message. */
-export const MAX_REFERENCES = 3
+export const MAX_REFERENCES = 10
 /** Default number of discovery candidates returned to a host. */
 export const DEFAULT_CANDIDATE_LIMIT = 50
 /** Minimum automatic UTF-8 budget for one rendered reference JSON object. */
@@ -9,7 +9,7 @@ export const DEFAULT_MAX_REFERENCE_BYTES = 65_536
 
 /** Session-reference service configuration. */
 export interface Config {
-  /** Maximum distinct source sessions referenced by one message, from one to three. */
+  /** Maximum distinct source sessions referenced by one message, from one to 10. */
   maxReferences?: number
   /** Default host candidate-list limit. */
   candidateLimit?: number

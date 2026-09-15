@@ -45,7 +45,7 @@ For a truncated reference, an optional spill backend saves the full captured tex
 
 | Field | Default | Meaning |
 |---|---|---|
-| `maxReferences` | `3` | Maximum distinct source sessions in one prepared message; must not exceed `3` |
+| `maxReferences` | `10` | Maximum distinct source sessions in one prepared message; must not exceed `10` |
 | `candidateLimit` | `50` | Default candidate count returned to a host |
 | `maxReferenceBytes` | automatic | Explicit maximum serialized JSON bytes per source; overrides the automatic budget exactly |
 | `referenceContextFraction` | `0.2` | Context-window fraction per source, from `0` to `1` |
@@ -117,7 +117,7 @@ The model sees two consecutive user-role messages: the current message with its 
 
 #### Token effect
 
-Each referenced message adds the fixed warning plus up to three serialized previews, each independently bounded by the configured or model-relative byte budget. Truncated references add separate omission notices outside that budget; a saved full transcript adds tokens only when retrieved. The exact context remains in target history until target compaction shadows or summarizes it; source-session changes add no further tokens.
+Each referenced message adds the fixed warning plus up to ten serialized previews, each independently bounded by the configured or model-relative byte budget. Truncated references add separate omission notices outside that budget; a saved full transcript adds tokens only when retrieved. The exact context remains in target history until target compaction shadows or summarizes it; source-session changes add no further tokens.
 
 #### KV Cache effect
 
