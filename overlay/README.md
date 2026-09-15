@@ -3,8 +3,8 @@
 My local overlay on top of the DeepSeek Harness **npm install**: five UI/route
 plugins for the dsh Web client, the profile patch layer that activates them, my
 harness settings, and one patch to a shipped package. Installing DSH from npm
-plus running `./install.sh` and `./patches/apply.sh` here reproduces this
-working setup on any machine.
+plus running `./install.sh` and `./patches/apply.sh --apply` here reproduces
+this working setup on any machine.
 
 ## What this repo is, and what it is not
 
@@ -86,8 +86,8 @@ An npm/npx install or upgrade restores the original bytes, so re-run this
 afterwards:
 
 ```sh
-./patches/apply.sh --dry-run   # report the edits, write nothing
-./patches/apply.sh             # write them
+./patches/apply.sh             # report the edits, write nothing (the default)
+./patches/apply.sh --apply     # write them
 ```
 
 It discovers the live install through the profile's own `node_modules` symlink
@@ -190,7 +190,7 @@ npx @deepseek-ai/dsh web --no-open     # creates $DSH_HOME/profiles/web on first
 git clone git@github.com:Six-Bit-TX/dsh-overlay.git && cd dsh-overlay && ./install.sh
 # 3. the shipped-package patch: raises the session-reference cap from 3 to 10,
 #    which no setting or plugin row can do
-./patches/apply.sh
+./patches/apply.sh --apply
 # 4. settings: copy settings/settings.yaml to $DSH_HOME/settings.yaml
 #    (it names API keys through environment variables, so export those too)
 # 5. reload the page

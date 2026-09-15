@@ -10,9 +10,10 @@
 # original bytes, so run this again afterwards.
 #
 # Usage:
-#   ./apply.sh                       # discover the package through the profile
-#   ./apply.sh --dry-run             # report the edits without writing them
-#   DSH_SESSION_REFERENCE_DIR=... ./apply.sh
+#   ./apply.sh --dry-run             # discover the package and report the edits, write nothing (the default)
+#   ./apply.sh --apply               # write the edits
+#   ./apply.sh --print-dir           # print the discovered package directory
+#   DSH_SESSION_REFERENCE_DIR=... ./apply.sh --apply
 #
 # A patched package is loaded only by a new host process: restart `dsh web`.
 set -euo pipefail

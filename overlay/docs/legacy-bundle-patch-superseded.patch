@@ -20,8 +20,8 @@ previously made `readAll` refuse the large files this workspace produces.
 
 Target file (the built client half of the Sidebar document-preview plugin):
   node_modules/@deepseek-ai/dsh-client-ui-sidebar-documentpreview/lib/client.js
-  relative to the DSH install; here that is
-  /home/xiongti1/.npm/_npx/1e7f6d9597241db0/
+  relative to the DSH install, under the npm/npx cache root:
+  ~/.npm/_npx/<hash>/
 
 Apply from that package directory:
   patch -p0 --dry-run < dsh-video-preview.patch   # check
@@ -43,8 +43,7 @@ What it changes
      registrations and loading modes; the "open with" menu can still switch a
      video back to plain text.
 
-Written 2026-09-15 by the DSH agent session in
-/home/xiongti1/tracking/swarm-tracker.
+Written 2026-09-15 by a DSH agent session.
 
 --- client.js.orig
 +++ client.js
