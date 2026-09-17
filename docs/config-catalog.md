@@ -272,7 +272,7 @@ Source: [`packages/api/terminal-controller/src/index.ts:28`](../packages/api/ter
 
 ## `@deepseek-ai/dsh-api-workspace-files`
 
-Requires: `fs` · `sandboxPolicy` · `sessions` · `typert`
+Requires: `fs` · `sandboxPolicy` · `sessions` · `typert` · `subprocess`
 
 ```ts config-catalog
 /** Deployment caps on one page or one listing. */
@@ -294,7 +294,7 @@ export interface Config {
 }
 ```
 
-Source: [`packages/api/workspace-files/src/index.ts:69`](../packages/api/workspace-files/src/index.ts)
+Source: [`packages/api/workspace-files/src/index.ts:77`](../packages/api/workspace-files/src/index.ts)
 
 <a id="deepseek-aidsh-attachment-local"></a>
 
@@ -1943,6 +1943,15 @@ export interface Config {
   runnerFailureSignatures?: string[]
   /** Positive timeout for each functional probe; zero would mean unbounded to Node. */
   probeTimeoutMs?: number
+  /**
+   * Bind this host's GPU device nodes into the confined process: the NVIDIA
+   * character devices and the DRM render nodes that exist when a command is
+   * wrapped. Bubblewrap's own `/dev` carries none of them, so CUDA and NVML
+   * fail inside the sandbox unless the nodes are rebound with device access;
+   * the list is detected per wrap, so a host without them is unaffected. Set
+   * false to withhold device access from confined commands.
+   */
+  gpuDevices?: boolean
 }
 ```
 

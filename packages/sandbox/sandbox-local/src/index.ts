@@ -21,7 +21,7 @@
  */
 
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -62,11 +62,20 @@ export interface Config {
   runnerFailureSignatures?: string[]
   /** Positive timeout for each functional probe; zero would mean unbounded to Node. */
   probeTimeoutMs?: number
+  /**
+   * Bind this host's GPU device nodes into the confined process: the NVIDIA
+   * character devices and the DRM render nodes that exist when a command is
+   * wrapped. Bubblewrap's own `/dev` carries none of them, so CUDA and NVML
+   * fail inside the sandbox unless the nodes are rebound with device access;
+   * the list is detected per wrap, so a host without them is unaffected. Set
+   * false to withhold device access from confined commands.
+   */
+  gpuDevices?: boolean
 }
 
 /** Probe whether `bwrap` can create the profile; the provider caches the bounded result. */
-function defaultProbeBwrap(timeoutMs: number): boolean {
-  const probe = spawnSync('bwrap', [...bwrapProfileArgs({ mode: 'read-only', workspaceRoot: '/' }), '--', 'true'], {
+function defaultProbeBwrap(timeoutMs: number, devices: readonly string[]): boolean {
+  const probe = spawnSync('bwrap', [...bwrapProfileArgs({ mode: 'read-only', workspaceRoot: '/' }, devices), '--', 'true'], {
     timeout: timeoutMs,
     stdio: 'ignore',
   })
@@ -119,6 +128,8 @@ export interface SandboxInternals {
   chain?: readonly SelectedRunner['runner'][]
   /** Replaces the functional `bwrap` probe (the Linux chain's first rung). */
   probeBwrap?: () => boolean
+  /** Replaces the detected host device paths a wrap rebinds (a fake list exercises the argv without a GPU). */
+  devicePaths?: readonly string[]
   /** Replaces the functional Landlock launcher probe (the Linux chain's second rung). */
   probeLandlock?: (launcher: string) => SandboxEnforcement | 'unusable'
   /** Replaces the functional Seatbelt probe (the darwin chain's sole rung — only consulted if that chain ever grows). */
@@ -238,6 +249,34 @@ const RUNNER_FAILURE_RULES = {
   seatbelt: [{ fatalSignatures: ['sandbox-exec: '] }],
   'windows-acl': [{ allowedExitCodes: [WINDOWS_ACL_RUNNER_FAILURE_EXIT], fatalSignatures: ['windows-acl-run: '] }],
 } as const satisfies Record<SelectedRunner['runner'], readonly RunnerFailureRule[]>
+/**
+ * The host device nodes a confined command may need: NVIDIA's character
+ * devices and the DRM render nodes, never the display (`card*`) nodes. Every
+ * entry is checked when a command is wrapped because the driver creates its
+ * nodes on first use, and a host without them yields an empty list.
+ * @returns absolute device paths that exist now, with the numbered nodes in name order.
+ */
+export function hostGpuDevicePaths(): readonly string[] {
+  const fixed = ['/dev/nvidiactl', '/dev/nvidia-uvm', '/dev/nvidia-uvm-tools', '/dev/nvidia-modeset', '/dev/nvidia-caps']
+  return [...fixed.filter(path => existsSync(path)), ...numberedNodes('/dev', /^nvidia\d+$/u), ...numberedNodes('/dev/dri', /^renderD\d+$/u)]
+}
+
+/**
+ * The absolute paths of the entries in `directory` whose names match `pattern`.
+ * @param directory - directory to list.
+ * @param pattern - name pattern to keep.
+ * @returns matching absolute paths in name order; empty when the directory is absent.
+ */
+function numberedNodes(directory: string, pattern: RegExp): string[] {
+  let names: string[]
+  try {
+    names = readdirSync(directory)
+  } catch {
+    // An absent directory is a host that exposes no such node.
+    return []
+  }
+  return names.filter(name => pattern.test(name)).sort().map(name => join(directory, name))
+}
 
 /**
  * Local process-sandbox provider. Registers as `ctx.sandbox`. Caches the
@@ -253,6 +292,7 @@ export class LocalSandboxProvider extends SandboxProvider {
     runnerCommand: z.array(z.string()).default([]),
     runnerFailureSignatures: z.array(z.string()).default([]),
     probeTimeoutMs: z.natural().default(5_000),
+    gpuDevices: z.boolean().default(true),
   })
 
   /** Test hook (mirrors the bash executors' `internals`). */
@@ -261,6 +301,7 @@ export class LocalSandboxProvider extends SandboxProvider {
   private readonly runnerCommand: string[] | undefined
   private readonly configuredRunnerFailureSignatures: string[]
   private readonly probeTimeoutMs: number
+  private readonly gpuDevices: boolean
   /** Cached chain verdict; undefined until the first confined wrap needs it. */
   private selectedRunner: SelectedRunner | 'unavailable' | undefined
   /**
@@ -293,6 +334,7 @@ export class LocalSandboxProvider extends SandboxProvider {
     this.configuredRunnerFailureSignatures = runnerFailureSignatures
     this.probeTimeoutMs = config.probeTimeoutMs as number
     assertPositiveFinite('probeTimeoutMs', this.probeTimeoutMs)
+    this.gpuDevices = config.gpuDevices as boolean
     // The temp grants are revoked with the provider: a clean server
     // shutdown leaves no temp ACEs behind (workspace ACEs stand by design —
     // the reuse cache; an unclean shutdown leaves them for the next
@@ -319,7 +361,7 @@ export class LocalSandboxProvider extends SandboxProvider {
     policy = { ...policy, workspaceRoot: canonicalPath(policy.workspaceRoot) }
     if (this.runnerCommand !== undefined) {
       return Promise.resolve<ConfinedArgv>({
-        argv: [...this.runnerCommand, ...bwrapProfileArgs(policy), '--', ...argv],
+        argv: [...this.runnerCommand, ...bwrapProfileArgs(policy, this.devicePaths()), '--', ...argv],
         enforcement: 'full',
         denialSignatures: DENIAL_SIGNATURES.runnerCommand,
         runnerFailureRules: [{ fatalSignatures: this.configuredRunnerFailureSignatures }],
@@ -338,8 +380,8 @@ export class LocalSandboxProvider extends SandboxProvider {
   /** The selected rung's runner invocation (program + profile arguments) for one policy. */
   private runnerArgv(runner: SelectedRunner['runner'], policy: SandboxPolicy): string[] {
     switch (runner) {
-      case 'bwrap': return ['bwrap', ...bwrapProfileArgs(policy)]
-      case 'landlock': return [this.landlockLauncher(), ...landlockProfileArgs(policy)]
+      case 'bwrap': return ['bwrap', ...bwrapProfileArgs(policy, this.devicePaths())]
+      case 'landlock': return [this.landlockLauncher(), ...landlockProfileArgs(policy, this.devicePaths())]
       case 'seatbelt': return [this.seatbeltExec(), ...seatbeltProfileArgs(policy)]
       case 'windows-acl': return this.windowsAclRunnerArgv(policy)
       default: return assertNever(runner)
@@ -521,7 +563,7 @@ export class LocalSandboxProvider extends SandboxProvider {
     // partial for its documented Everyone and hard-link boundaries.
     switch (runner) {
       case 'bwrap': {
-        const probe = this.internals.probeBwrap ?? (() => defaultProbeBwrap(this.probeTimeoutMs))
+        const probe = this.internals.probeBwrap ?? (() => defaultProbeBwrap(this.probeTimeoutMs, this.devicePaths()))
         return probe() ? 'full' : 'unusable'
       }
       case 'landlock': {
@@ -542,6 +584,16 @@ export class LocalSandboxProvider extends SandboxProvider {
   }
 
   /** The Landlock launcher to probe and exec (test hook over the resolved one). */
+  /**
+   * The device nodes one wrap rebinds: the injected list for tests, else this
+   * host's detected GPU nodes, else nothing when the feature is disabled.
+   * @returns absolute device paths, possibly empty.
+   */
+  private devicePaths(): readonly string[] {
+    if (!this.gpuDevices) return []
+    return this.internals.devicePaths ?? hostGpuDevicePaths()
+  }
+
   private landlockLauncher(): string {
     return this.internals.landlockLauncher ?? landlockLauncherPath()
   }

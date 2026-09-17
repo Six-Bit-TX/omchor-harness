@@ -45,6 +45,7 @@ Load the sandbox service and mount the provider; the defaults below are the sele
 | `runnerCommand` | `[]` | Custom runner argv; bwrap-compatible profile arguments are appended, full enforcement is asserted, and built-in selection and probes are skipped |
 | `runnerFailureSignatures` | `[]` | Case-insensitive stderr substrings identifying the custom runner's own failure dialect; required with `runnerCommand` |
 | `probeTimeoutMs` | `5,000` | Timeout for each functional probe of a competing runner candidate |
+| `gpuDevices` | `true` | Rebinds this host's GPU device nodes — the NVIDIA character devices and the DRM render nodes that exist when a command is wrapped — into the bwrap sandbox with device access, so confined CUDA work runs without widening the file-effect policy; `false` withholds device access |
 
 The generated [configuration catalog](../../../docs/config-catalog.md#deepseek-aidsh-sandbox-local) is the exhaustive source for every accepted field and its JSDoc.
 
@@ -72,7 +73,7 @@ Selection is by platform first, probes second: each platform has a runner chain 
 
 ### Platform profiles
 
-The bwrap profile combines a read-only host root, a fresh `/dev`, and `/proc` from a private PID namespace — commands manage their descendants but cannot see host processes, so procfs magic links cannot bypass the mounts; `workspace-write` adds an ephemeral `/tmp` and a writable workspace bind. The [private-PID note](../../../.agents/notes/implemented/bug-fix/2026-08-06-bwrap-private-pid-namespace.md) records the boundary.
+The bwrap profile combines a read-only host root, a fresh `/dev`, and `/proc` from a private PID namespace — commands manage their descendants but cannot see host processes, so procfs magic links cannot bypass the mounts; `workspace-write` adds an ephemeral `/tmp` and a writable workspace bind. The [private-PID note](../../../.agents/notes/implemented/bug-fix/2026-08-06-bwrap-private-pid-namespace.md) records the boundary. Every wrap also rebinds this host's GPU device nodes — the NVIDIA character devices and the DRM render nodes that exist at that moment — with device access, because the profile's own `/dev` and its no-dev binds would otherwise leave CUDA and NVML without a device; `gpuDevices: false` withholds them.
 
 The `@deepseek-ai/node-addon-system/landlock-run` API supplies the platform launcher, functional probe, and grant vocabulary; this provider maps mode to grants only, keeping path resolution and probe parsing with the versioned binary.
 

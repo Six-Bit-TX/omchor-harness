@@ -78,14 +78,14 @@ export function homePatchPath(): string {
   return join(resolveDshHome(), PROFILE_PATCH_FILENAME)
 }
 
-/** Absolute path of this dsh installation's package.json (both anchors: src/ and lib/ sit one level under apps/cli). */
+/** Absolute path of this omh installation's package.json (both anchors: src/ and lib/ sit one level under apps/cli). */
 export const INSTALL_ANCHOR = fileURLToPath(new URL('../package.json', import.meta.url))
 
 /** The session-telemetry row id the DSH_TELEMETRY_DISABLED switch targets. */
 const TELEMETRY_ROW_ID = 'session-telemetry-otel'
 
 /** The empty root entry list every profile tree patches over. */
-const PROFILE_ROOT_CONFIG = `# dsh profile root — an empty entry list. The tree is composed as patches:
+const PROFILE_ROOT_CONFIG = `# omh profile root — an empty entry list. The tree is composed as patches:
 # each bundle in package.json's dsh.profile.bundles, then cordis.patch.yml, then any
 # --patch overlays. Edit cordis.patch.yml, not this file.
 []

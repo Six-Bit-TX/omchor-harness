@@ -1,7 +1,7 @@
 {
   "id": "/",
-  "name": "DeepSeek Harness",
-  "short_name": "DSH",
+  "name": "Omchor Harness",
+  "short_name": "Omchor",
   "start_url": "/",
   "scope": "/",
   "display": "fullscreen",

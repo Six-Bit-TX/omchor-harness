@@ -45,6 +45,7 @@ kind: "package-reference"
 | `runnerCommand` | `[]` | 自定义 runner argv；会追加 bwrap 兼容的 profile 参数，断言完全强制执行，并跳过内置选择与探测 |
 | `runnerFailureSignatures` | `[]` | 识别自定义 runner 自身失败方言的不区分大小写 stderr 子串；与 `runnerCommand` 搭配必需 |
 | `probeTimeoutMs` | `5,000` | 每次竞争 runner 候选功能探测的超时时间 |
+| `gpuDevices` | `true` | 把本机 GPU 设备节点（wrap 时存在的 NVIDIA 字符设备与 DRM render 节点）以允许设备访问的方式重新绑定进 bwrap 沙箱，使受约束的 CUDA 工作无需放宽文件影响策略即可运行；`false` 拒绝设备访问 |
 
 生成的[配置目录](../../../docs/config-catalog.zh.md#deepseek-aidsh-sandbox-local)是每个受支持字段及其 JSDoc 的穷尽式真源。
 
@@ -72,7 +73,7 @@ kind: "package-reference"
 
 ### 平台 profile
 
-bwrap profile 组合只读宿主根目录、全新 `/dev` 与私有 PID 命名空间中的 `/proc`——命令可管理其后代，但看不到宿主进程，因此 procfs 魔法链接无法绕过挂载；`workspace-write` 另加临时的 `/tmp` 与可写工作区绑定挂载。[私有 PID 笔记](../../../.agents/notes/implemented/bug-fix/2026-08-06-bwrap-private-pid-namespace.zh.md)记录该边界。
+bwrap profile 组合只读宿主根目录、全新 `/dev` 与私有 PID 命名空间中的 `/proc`——命令可管理其后代，但看不到宿主进程，因此 procfs 魔法链接无法绕过挂载；`workspace-write` 另加临时的 `/tmp` 与可写工作区绑定挂载。[私有 PID 笔记](../../../.agents/notes/implemented/bug-fix/2026-08-06-bwrap-private-pid-namespace.zh.md)记录该边界。每次 wrap 还会以允许设备访问的方式重新绑定本机当时存在的 GPU 设备节点——NVIDIA 字符设备与 DRM render 节点——因为 profile 自带的 `/dev` 与其非设备绑定会让 CUDA 与 NVML 拿不到设备；`gpuDevices: false` 可拒绝该访问。
 
 `@deepseek-ai/node-addon-system/landlock-run` API 提供平台 launcher、功能探测与授权词汇；此提供方只做模式到授权的映射，把路径解析与探测解析保留在带版本的 binary 中。
 

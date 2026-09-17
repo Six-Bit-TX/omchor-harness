@@ -9,12 +9,24 @@ import { writableRoots } from '@deepseek-ai/dsh-sandbox'
 import type { SandboxPolicy } from '@deepseek-ai/dsh-sandbox'
 
 /**
+ * The arguments that keep host device nodes reachable inside a bwrap mount
+ * profile. Bubblewrap mounts its binds no-dev, so an ordinary bind leaves a
+ * device node unusable; `--dev-bind` is the flag that permits device access.
+ * @param devices - absolute device paths that exist on the host, in bind order.
+ * @returns one `--dev-bind` pair per device, or an empty list.
+ */
+export function deviceBindArgs(devices: readonly string[]): string[] {
+  return devices.flatMap(device => ['--dev-bind', device, device])
+}
+
+/**
  * Build the bwrap profile arguments for one file-effect policy.
  * @param policy - file-effect policy to express as bwrap mounts.
+ * @param devices - host device paths to rebind with device access; the caller detects them per wrap.
  * @returns profile arguments before the trailing separator and command argv.
  */
-export function bwrapProfileArgs(policy: SandboxPolicy): string[] {
-  const args = ['--ro-bind', '/', '/', '--dev', '/dev', '--unshare-pid', '--proc', '/proc', '--die-with-parent']
+export function bwrapProfileArgs(policy: SandboxPolicy, devices: readonly string[] = []): string[] {
+  const args = ['--ro-bind', '/', '/', '--dev', '/dev', ...deviceBindArgs(devices), '--unshare-pid', '--proc', '/proc', '--die-with-parent']
   if (policy.mode === 'workspace-write') {
     args.push('--tmpfs', '/tmp')
     args.push('--bind', policy.workspaceRoot, policy.workspaceRoot)
@@ -25,10 +37,11 @@ export function bwrapProfileArgs(policy: SandboxPolicy): string[] {
 /**
  * Build the Landlock launcher grants for one file-effect policy.
  * @param policy - file-effect policy to express as Landlock allow-list grants.
+ * @param devices - host device paths to grant write access; the caller detects them per wrap.
  * @returns launcher grant arguments before the trailing separator and command argv.
  */
-export function landlockProfileArgs(policy: SandboxPolicy): string[] {
-  const readWrite = ['/dev/null']
+export function landlockProfileArgs(policy: SandboxPolicy, devices: readonly string[] = []): string[] {
+  const readWrite = ['/dev/null', ...devices]
   if (policy.mode === 'workspace-write') {
     readWrite.push('/tmp', policy.workspaceRoot)
   }

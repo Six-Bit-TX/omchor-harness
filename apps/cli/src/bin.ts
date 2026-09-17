@@ -22,7 +22,7 @@ function readVersion(): string {
 }
 
 /**
- * Run the public dsh command-line interface.
+ * Run the public omh command-line interface.
  * @returns a promise that settles when the selected command mode finishes.
  */
 export async function runCli(): Promise<void> {
@@ -57,7 +57,7 @@ export async function runCli(): Promise<void> {
     }
     default:
       invocation satisfies never
-      throw new Error(`dsh: unhandled invocation mode ${JSON.stringify(invocation)}`)
+      throw new Error(`omh: unhandled invocation mode ${JSON.stringify(invocation)}`)
   }
 }
 
