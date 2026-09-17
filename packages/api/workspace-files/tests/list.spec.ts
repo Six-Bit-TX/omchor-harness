@@ -1,7 +1,7 @@
-/** The `list` endpoint: the same containment gates as `read`, plus the entry cap. */
+/** The `list` endpoint: any directory the backend reaches, plus the entry cap. */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { mkdir, symlink, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { mkdir, realpath, symlink, writeFile } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
 import { failureOf, openWorkspace, signal, type Harness } from './harness.ts'
 
 let harness: Harness
@@ -82,17 +82,24 @@ describe('workspaceFiles.list — the entry cap', () => {
   })
 })
 
+describe('workspaceFiles.list — directories outside the workspace', () => {
+  it('lists an absolute directory outside the workspace and reports it by its absolute path', async () => {
+    await mkdir(join(outside, 'nested'))
+    await writeFile(join(outside, 'nested', 'secret.txt'), 'no', 'utf8')
+    const listing = await endpoint().list(harness.scope, join(outside, 'nested'), signal())
+    expect(listing.path).toBe(await realpath(join(outside, 'nested')))
+    expect(listing.entries).toEqual([{ name: 'secret.txt', type: 'file', size: 2 }])
+    expect(listing.truncated).toBe(false)
+  })
+
+  it('lists a directory reached by climbing out of the workspace', async () => {
+    const listing = await endpoint().list(harness.scope, '..', signal())
+    expect(listing.path).toBe(dirname(await realpath(workspace)))
+    expect(listing.entries.map(entry => entry.name)).toEqual(['outside', 'workspace'])
+  })
+})
+
 describe('workspaceFiles.list — gates', () => {
-  it('rejects an absolute directory outside the workspace', async () => {
-    const failure = await failureOf(endpoint().list(harness.scope, outside, signal()))
-    expect(failure.code).toBe('workspace-file/outside-workspace')
-  })
-
-  it('rejects a traversal that climbs out of the workspace', async () => {
-    const failure = await failureOf(endpoint().list(harness.scope, '..', signal()))
-    expect(failure.code).toBe('workspace-file/outside-workspace')
-  })
-
   it('rejects a symlinked directory before following it, wherever it points', async () => {
     await symlink(outside, join(workspace, 'escape'))
     const failure = await failureOf(endpoint().list(harness.scope, 'escape', signal()))

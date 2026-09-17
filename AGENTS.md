@@ -104,7 +104,7 @@ pnpm run demo:ptc -- "task"  # headless PTC mode run (needs key)
 
 ### Host sandbox failures
 
-If a required `gh`, `pnpm`, build, test, or generator command fails because the sandbox blocks credentials, network, IPC, watching, or nested `sandbox-exec`, retry unchanged with the narrowest host escalation. Require sandbox evidence; never bypass test failures or the product sandbox.
+If a required `gh`, `pnpm`, build, test, or generator command fails because the sandbox blocks credentials, network, IPC, watching, or nested `sandbox-exec`, retry unchanged with the narrowest host escalation. Require sandbox evidence; never bypass test failures or the product sandbox. A host runner that cannot create a namespace fails every confined command ([briefing](.agents/notes/implemented/bug-fix/2026-09-17-remote-method-name-shadowing.md)).
 
 ### Run relevant checks locally
 
@@ -153,6 +153,7 @@ Real-API tests and demos read `DEEPSEEK_API_KEY`, optional `DEEPSEEK_BASE_URL`, 
 - **Labels:** one PR `kind/*`, all material `area/*`, and native Issue Type ([taxonomy](.agents/notes/implemented/process/2026-08-08-unified-github-label-taxonomy.md)).
 - TODO markers: `FIXME`/`TODO`/`XXX` by urgency ([semantics](docs/development.md)).
 - Files end with exactly one trailing newline; `git diff --cached --check` (pre-commit) gates it.
+- **A Remote method name must not shadow its namespace service**, which refuses names it already answers to, inherited prototype members included; a collision stops that namespace and its dependents at Client install ([briefing](.agents/notes/implemented/bug-fix/2026-09-17-remote-method-name-shadowing.md)).
 
 ## Defensive patterns
 

@@ -23,11 +23,11 @@ import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { WorkspaceBrowserProps } from '../contract/slots.ts'
 import type { SessionNode, SessionOrderBy } from '../tree.ts'
 import {
-  deriveFlat, deriveGroups, deriveSearchResults, orderByRecency, owningGroupKey,
+  deriveFlat, deriveGroups, derivePinned, deriveSearchResults, orderByRecency, owningGroupKey,
   pinCurrentBlank, reconcileManualOrder, UNGROUPED_KEY, visibleSessionIds,
 } from '../tree.ts'
 import { ProjectRowItem, SearchResultItem, SessionNodeItem } from './Rows.tsx'
-import { FLAT_SESSION_ORDER_KEY } from '../stores.ts'
+import { FLAT_SESSION_ORDER_KEY, pinnedSessionIdsOf } from '../stores.ts'
 import { WorkspacePickFlow } from '../WorkspacePicker.tsx'
 import css from './WorkspaceBrowser.module.css'
 
@@ -187,6 +187,10 @@ type SessionTreeProps = Pick<
   setGroupExpanded: (key: string, expanded: boolean) => void
   /** Save a drag order and select Manual. */
   setSessionOrder: (accountKey: string, order: readonly string[]) => void
+  /** Pinned Session ids, most recently pinned first. */
+  pinnedSessionIds: readonly string[]
+  /** Persist one Session's pinned membership. */
+  setPinned: (sessionId: SessionNode['id'], pinned: boolean) => void
   /** Registry-global archive set (hidden rows). */
   archivedSessionIds: readonly SessionNode['id'][]
   /** Open the browser-owned rename dialog for a real Workspace group. */
@@ -211,7 +215,7 @@ function SessionTree({
   onRenameRequest, onDeleteRequest, onSessionRename, onSessionArchive,
   insertWorkspaceBefore,
   groupExpansion, setGroupExpanded,
-  setSessionOrder, home, t,
+  setSessionOrder, pinnedSessionIds, setPinned, home, t,
   revealSessionId, onSessionRevealed,
 }: SessionTreeProps) {
   const panelActive = usePanelInfo(info => info.activePanelId !== null)
@@ -243,9 +247,18 @@ function SessionTree({
     () => deriveGroups(list, workspaces, archivedSessionIds, pendingInteractions, {
       expandedGroups,
       ungroupedOrder: ungroupedSessionIds,
+      pinnedSessionIds,
     }),
-    [list, workspaces, archivedSessionIds, pendingInteractions, expandedGroups, ungroupedSessionIds],
+    [list, workspaces, archivedSessionIds, pendingInteractions, expandedGroups, ungroupedSessionIds, pinnedSessionIds],
   )
+  // The pinned section's order is the pin order itself (most recently pinned
+  // first): a pin is an explicit placement, so the ordering modes keep
+  // governing the Workspace groups, Ungrouped, and the flat list instead.
+  const pinnedRows = useMemo(
+    () => derivePinned(list, pinnedSessionIds, archivedSessionIds, pendingInteractions),
+    [archivedSessionIds, list, pendingInteractions, pinnedSessionIds],
+  )
+  const pinnedSet = useMemo(() => new Set(pinnedSessionIds), [pinnedSessionIds])
   useEffect(() => {
     if (revealGroup === undefined || groupExpansion[revealGroup] === true) return
     setGroupExpanded(revealGroup, true)
@@ -339,8 +352,34 @@ function SessionTree({
         role="tree"
         aria-label={t('section.sessions')}
       >
-        {groups.length === 0 && (
+        {groups.length === 0 && pinnedRows.length === 0 && (
           <div className={css.empty}>{t('empty.none')}</div>
+        )}
+        {/* Pinned section: the pinned Sessions only, above every Workspace
+            group. Its rows carry no drag wiring — the per-Workspace manual
+            order never sees them. */}
+        {pinnedRows.length > 0 && (
+          <div className={css.groupSection}>
+            <div className={css.pinnedHeader}>{t('group.pinned')}</div>
+            {pinnedRows.map(node => (
+              <SessionNodeItem
+                key={node.id}
+                node={node}
+                currentId={current}
+                now={now}
+                onOpen={open}
+                onRename={onSessionRename}
+                onFork={forkSession}
+                onArchive={onSessionArchive}
+                onTogglePin={setPinned}
+                pinned
+                onReveal={node.id === revealSessionId
+                  ? () => { onSessionRevealed(node.id) }
+                  : undefined}
+                t={t}
+              />
+            ))}
+          </div>
         )}
         {groups.map((group) => {
           const workspaceId = group.workspaceId
@@ -473,6 +512,8 @@ function SessionTree({
                     onRename={onSessionRename}
                     onFork={forkSession}
                     onArchive={onSessionArchive}
+                    onTogglePin={setPinned}
+                    pinned={pinnedSet.has(node.id)}
                     onReveal={node.id === revealSessionId && group.key === revealGroup
                       ? () => { onSessionRevealed(node.id) }
                       : undefined}
@@ -505,7 +546,7 @@ function SessionTree({
 /** The flat "In one list" body: every session is one draggable top-level row. */
 function FlatList({
   list, sessionIds, useSessionPendingInteraction, open, forkSession, onSessionRename, onSessionArchive,
-  usePanelInfo, setSessionOrder,
+  usePanelInfo, setSessionOrder, pinnedSessionIds, setPinned,
   revealSessionId, onSessionRevealed, t,
 }: Pick<
   SessionTreeProps,
@@ -516,6 +557,8 @@ function FlatList({
   | 'onSessionArchive'
   | 'usePanelInfo'
   | 'setSessionOrder'
+  | 'pinnedSessionIds'
+  | 'setPinned'
   | 'revealSessionId'
   | 'onSessionRevealed'
   | 't'
@@ -529,6 +572,7 @@ function FlatList({
     () => deriveFlat(list, sessionIds, pendingInteractions),
     [list, sessionIds, pendingInteractions],
   )
+  const pinnedSet = useMemo(() => new Set(pinnedSessionIds), [pinnedSessionIds])
   const [drag, setDrag] = useState<DragState | null>(null)
   const dropCommitted = useRef(false)
   useNativeDragAcceptance(drag !== null)
@@ -570,6 +614,8 @@ function FlatList({
               onRename={onSessionRename}
               onFork={forkSession}
               onArchive={onSessionArchive}
+              onTogglePin={setPinned}
+              pinned={pinnedSet.has(node.id)}
               onReveal={node.id === revealSessionId
                 ? () => { onSessionRevealed(node.id) }
                 : undefined}
@@ -732,6 +778,8 @@ export function WorkspaceBrowser({
   const orderBy = useStore(s => s.orderBy)
   const groupExpansion = useStore(s => s.groupExpansion)
   const sessionOrderByAccount = useStore(s => s.sessionOrderByAccount)
+  // The persisted payload may predate pinning; absence reads as nothing pinned.
+  const pinnedSessionIds = useStore(pinnedSessionIdsOf)
   const workspaceReady = workspacePhase === 'ready' && workspaceStreamState !== 'loading'
   const currentBlank = list.current !== undefined && list.byId[list.current]?.blank === true
     ? list.current
@@ -827,6 +875,10 @@ export function WorkspaceBrowser({
   ])
   const saveSessionOrder = (accountKey: string, order: readonly string[]): void => {
     actions.setSessionOrder(accountKey, order, activeSessionOrders)
+  }
+  /** Pin or unpin one Session; the pinned section renders off the store echo. */
+  const togglePinned = (sessionId: SessionNode['id'], pinned: boolean): void => {
+    actions.setPinned(sessionId, pinned)
   }
   // The query outlives the tree and the input (both wide-only) so collapsing
   // does not silently drop an in-progress filter.
@@ -1198,6 +1250,8 @@ export function WorkspaceBrowser({
                 open={open} forkSession={forkSession}
                 onSessionRename={onSessionRename} onSessionArchive={onSessionArchive}
                 setSessionOrder={saveSessionOrder}
+                pinnedSessionIds={pinnedSessionIds}
+                setPinned={togglePinned}
                 revealSessionId={revealSessionId}
                 onSessionRevealed={acknowledgeSessionReveal}
                 t={t}
@@ -1217,6 +1271,8 @@ export function WorkspaceBrowser({
                 groupExpansion={groupExpansion}
                 setGroupExpanded={actions.setGroupExpanded}
                 setSessionOrder={saveSessionOrder}
+                pinnedSessionIds={pinnedSessionIds}
+                setPinned={togglePinned}
                 archivedSessionIds={archivedSessionIds}
                 startSession={startSession}
                 open={open}

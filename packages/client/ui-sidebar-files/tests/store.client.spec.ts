@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import { RemoteError } from '@deepseek-ai/dsh-client-test-runtime'
-import { createFilesStore } from '../src/client/store.ts'
+import { createFilesStore, RECENT_LIMIT } from '../src/client/store.ts'
 import type { DirLevel } from '../src/client/store.ts'
 import type { TabId } from '@deepseek-ai/dsh-client-ui-dockkit'
 
@@ -33,7 +33,9 @@ describe('createFilesStore', () => {
     const { actions } = store
     const getSnapshot = (): ReturnType<typeof store.getSnapshot> => store.getSnapshot()
     actions.start(TAB, ROOT)
-    expect(getSnapshot().byTab[TAB]).toEqual({ root: ROOT, levels: {}, expanded: [ROOT], scrollTop: 0 })
+    expect(getSnapshot().byTab[TAB]).toEqual({
+      root: ROOT, levels: {}, expanded: [ROOT], scrollTop: 0, recent: [ROOT], compareBase: null,
+    })
   })
 
   it('walks one level through loading, ready, and failed', () => {
@@ -75,7 +77,9 @@ describe('createFilesStore', () => {
     actions.toggled(TAB, child)
     actions.loaded(TAB, child, LEVEL)
     actions.reset(TAB)
-    expect(getSnapshot().byTab[TAB]).toEqual({ root: ROOT, levels: {}, expanded: [ROOT, child], scrollTop: 0 })
+    expect(getSnapshot().byTab[TAB]).toEqual({
+      root: ROOT, levels: {}, expanded: [ROOT, child], scrollTop: 0, recent: [ROOT], compareBase: null,
+    })
   })
 
   it('remembers where the body is scrolled to', () => {
@@ -84,6 +88,42 @@ describe('createFilesStore', () => {
     actions.start(TAB, ROOT)
     actions.scrolled(TAB, 120)
     expect(store.getSnapshot().byTab[TAB]!.scrollTop).toBe(120)
+  })
+
+  it('navigate re-roots the tab, drops the old levels, and leads the visited list with the new root', () => {
+    const store = createFilesStore().create()
+    const { actions } = store
+    const getSnapshot = (): ReturnType<typeof store.getSnapshot> => store.getSnapshot()
+    actions.start(TAB, ROOT)
+    actions.loaded(TAB, ROOT, LEVEL)
+    actions.navigate(TAB, '/elsewhere')
+    expect(getSnapshot().byTab[TAB]).toEqual({
+      root: '/elsewhere', levels: {}, expanded: ['/elsewhere'], scrollTop: 0,
+      recent: ['/elsewhere', ROOT], compareBase: null,
+    })
+    // Revisiting a directory moves it to the head instead of duplicating it.
+    actions.navigate(TAB, ROOT)
+    expect(getSnapshot().byTab[TAB]!.recent).toEqual([ROOT, '/elsewhere'])
+  })
+
+  it('keeps the visited list bounded to the newest visits', () => {
+    const store = createFilesStore().create()
+    const { actions } = store
+    actions.start(TAB, ROOT)
+    for (let index = 0; index < RECENT_LIMIT + 3; index++) actions.navigate(TAB, `/dir-${String(index)}`)
+    const recent = store.getSnapshot().byTab[TAB]!.recent
+    expect(recent).toHaveLength(RECENT_LIMIT)
+    expect(recent[0]).toBe(`/dir-${String(RECENT_LIMIT + 2)}`)
+  })
+
+  it('records and clears the tab\'s compare base', () => {
+    const store = createFilesStore().create()
+    const { actions } = store
+    actions.start(TAB, ROOT)
+    actions.compareSelected(TAB, `${ROOT}/a.txt`)
+    expect(store.getSnapshot().byTab[TAB]!.compareBase).toBe(`${ROOT}/a.txt`)
+    actions.compareSelected(TAB, null)
+    expect(store.getSnapshot().byTab[TAB]!.compareBase).toBeNull()
   })
 
   it('refuses to write a level for a tab that was never started', () => {

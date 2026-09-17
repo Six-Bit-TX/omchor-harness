@@ -18,10 +18,10 @@
    artifact and slot surfaces settle, one copy in ui-primitives could serve
    every pane header.
 
-   One 38px row flush under the pane's strip: the root's path, then reload at
-   its end. With the strip's 38px above, its rule lies where the conversation
-   header's does (ui-conversation ConversationRoot `.header`, 76px with the
-   same rule). */
+   One 38px row flush under the pane's strip: the location button, the root's
+   path, then reload at its end. With the strip's 38px above, its rule lies
+   where the conversation header's does (ui-conversation ConversationRoot
+   `.header`, 76px with the same rule). */
 .header {
   display: flex;
   flex: 0 0 auto;
@@ -29,7 +29,7 @@
   align-items: center;
   box-sizing: border-box;
   height: 38px;
-  padding: 0 6px 0 16px;
+  padding: 0 6px;
   border-bottom: 0.5px solid var(--dsw-alias-border-l3);
 }
 
@@ -38,16 +38,41 @@
    margin is zero and `flex-end` holds the name at the right edge, so the
    directories run off the left and the box clips them there, faded by the
    mask while `data-files-path-clipped` is set. The margin plus the row's gap
-   put the text 16px clear of the first control. */
+   put the text 16px clear of the first control.
+
+   A button rather than a paragraph because clicking it opens the address
+   field; the resets keep it looking like the text it shows. */
 .path {
   display: flex;
   flex: 1 1 auto;
   justify-content: flex-end;
   min-width: 0;
   margin-right: 12px;
+  padding: 0;
   overflow: hidden;
+  color: inherit;
+  font: inherit;
   font-size: 12px;
+  text-align: left;
   white-space: nowrap;
+  background: transparent;
+  border: 0;
+  cursor: text;
+}
+
+/* The address field stands exactly where the path did, so the row does not
+   move when the reader starts editing. */
+.pathInput {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-right: 12px;
+  padding: 3px 6px;
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 12px;
+  background: var(--dsw-alias-bg-layer-2);
+  border: 0.5px solid var(--dsw-alias-border-l3);
+  border-radius: 6px;
 }
 
 .path[data-files-path-clipped] {
@@ -205,4 +230,132 @@
    on the text's line and spaces it. */
 .titleIcon {
   flex: none;
+}
+
+/* One location row: what the place is, then the directory it names. The path
+   gives way first when the menu's card is narrower than both. */
+.locationLabel {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  min-width: 0;
+}
+
+.locationName {
+  flex: none;
+}
+
+.locationPath {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--dsw-alias-label-tertiary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A gesture the tree performed and the reader has to know about: a download
+   the Host refused, most often because the file is past the read cap. */
+.notice {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 6px 16px;
+  color: var(--dsw-alias-state-error-primary);
+  font-size: 12px;
+}
+
+/* Dialog bodies: one field, one failure line, one waiting line. */
+.dialogInput {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 8px 10px;
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 13px;
+  background: var(--dsw-alias-bg-layer-2);
+  border: 0.5px solid var(--dsw-alias-border-l3);
+  border-radius: 8px;
+}
+
+.dialogError {
+  margin: 8px 0 0;
+  color: var(--dsw-alias-state-error-primary);
+  font-size: 12px;
+}
+
+.dialogNote {
+  margin: 8px 0 0;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+}
+
+/* The confirmation the reader has to mean: the error ink on the outline
+   capsule, with the danger fill on hover. */
+.dangerButton {
+  color: var(--dsw-alias-state-error-primary);
+}
+
+.dangerButton:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover-danger);
+}
+
+/* A comparison and a history need more room than the standard card: the diff's
+   own lines and the commit rows scroll inside it. */
+.compareDialog {
+  width: min(720px, 100%);
+}
+
+.timelineDialog {
+  width: min(560px, 100%);
+}
+
+.comparePaths,
+.timelinePath {
+  margin-bottom: 4px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.timelineList {
+  max-height: 320px;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.timelineRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  align-items: baseline;
+  padding: 6px 0;
+  border-bottom: 0.5px solid var(--dsw-alias-border-l3);
+}
+
+.timelineHash {
+  flex: none;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+}
+
+.timelineSubject {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.timelineMeta {
+  flex: none;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+}
+
+.timelineCounts {
+  flex: none;
+  margin-left: auto;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
 }

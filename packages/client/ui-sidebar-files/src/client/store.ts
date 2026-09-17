@@ -41,7 +41,7 @@ export type LevelState =
  * the Host reports it, and a child is the parent joined with the entry name.
  */
 export interface FilesTabState {
-  /** Absolute path of the workspace root this tree is rooted at. */
+  /** Absolute path of the directory this tree is rooted at. */
   root: string
   /** Level state by absolute directory path; a path absent here was never asked for. */
   levels: Record<string, LevelState>
@@ -49,6 +49,27 @@ export interface FilesTabState {
   expanded: string[]
   /** The body's scroll offset in px, so a remounted tree comes back where the reader was. */
   scrollTop: number
+  /**
+   * Directories this tab has been rooted at, most recent first and the current
+   * root leading. The location menu offers them; another tab never sees them.
+   */
+  recent: string[]
+  /** Absolute path selected as this tab's compare base, or null. */
+  compareBase: string | null
+}
+
+/** How many visited directories one tab remembers. */
+export const RECENT_LIMIT = 8
+
+/**
+ * Put `root` at the head of a tab's visited list, dropping any earlier visit to
+ * it and the oldest entries past {@link RECENT_LIMIT}.
+ * @param recent - the tab's visited directories, most recent first.
+ * @param root - the directory now being rooted at.
+ * @returns the new list.
+ */
+function visit(recent: readonly string[], root: string): string[] {
+  return [root, ...recent.filter(path => path !== root)].slice(0, RECENT_LIMIT)
 }
 
 /** Every tab's tree, keyed by tab id. */
@@ -72,6 +93,8 @@ function bucket(state: FilesState, tabId: TabId): FilesTabState {
 /** The tree store's write set; every action names the tab it writes. */
 type FilesActions = {
   start: (draft: FilesState, tabId: TabId, root: string) => void
+  navigate: (draft: FilesState, tabId: TabId, root: string) => void
+  compareSelected: (draft: FilesState, tabId: TabId, path: string | null) => void
   loading: (draft: FilesState, tabId: TabId, path: string) => void
   loaded: (draft: FilesState, tabId: TabId, path: string, level: DirLevel) => void
   failed: (draft: FilesState, tabId: TabId, path: string, failure: RemoteFailure) => void
@@ -94,12 +117,41 @@ export function createFilesStore(): EngineStoreHandle<FilesState, FilesActions> 
     actions: {
       /**
        * Seed one tab's tree at its workspace root, with the root expanded.
+       *
+       * A new tab always starts here, at the session's own working directory:
+       * nothing another tab navigated to can seed it.
        * @param d - draft state.
        * @param tabId - the tab being drawn.
        * @param root - absolute path of the workspace root.
        */
       start: (d, tabId: TabId, root: string) => {
-        d.byTab[tabId] = { root, levels: {}, expanded: [root], scrollTop: 0 }
+        d.byTab[tabId] = { root, levels: {}, expanded: [root], scrollTop: 0, recent: [root], compareBase: null }
+      },
+      /**
+       * Root one tab at another directory, as the address bar and the location
+       * menu ask: the new root is the only expanded directory, nothing stays
+       * loaded, the body starts at the top, and the visit joins the tab's own
+       * recent list.
+       * @param d - draft state.
+       * @param tabId - the tab being drawn.
+       * @param root - absolute path of the directory to root at.
+       */
+      navigate: (d, tabId: TabId, root: string) => {
+        const state = bucket(d, tabId)
+        state.root = root
+        state.levels = {}
+        state.expanded = [root]
+        state.scrollTop = 0
+        state.recent = visit(state.recent, root)
+      },
+      /**
+       * Set or clear one tab's compare base.
+       * @param d - draft state.
+       * @param tabId - the tab being drawn.
+       * @param path - absolute path selected as the base, or null to clear it.
+       */
+      compareSelected: (d, tabId: TabId, path: string | null) => {
+        bucket(d, tabId).compareBase = path
       },
       /**
        * Mark one directory as being listed.

@@ -1,6 +1,7 @@
 /**
  * Shared fixture: a real local backend over a temp workspace beside a sibling
- * directory outside it, and a sandbox policy whose only job is naming the root.
+ * directory outside it, a sandbox policy whose only job is naming the root, and
+ * a scripted subprocess seam.
  *
  * The real backend, not a mocked `ctx.fs`, because the gates under test are
  * only meaningful against a real filesystem: a symlink that leaves the
@@ -14,6 +15,7 @@ import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import { LocalFileSystem } from '@deepseek-ai/dsh-fs-local'
 import { SessionId } from '@deepseek-ai/dsh-session/types'
+import type { SubprocessHandle, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
 import { remoteErrorOf } from '@deepseek-ai/dsh-typert-protocol'
 import { WorkspaceFiles, type Config, type WorkspaceFileScope } from '../src/index.ts'
 
@@ -24,12 +26,26 @@ function fileScope(workspaceRoot: string): WorkspaceFileScope {
 
 export const signal = (): AbortSignal => new AbortController().signal
 
+/**
+ * Stand-in for the subprocess seam: `spawn` records every spec and answers
+ * through {@link answer}, which a test scripts before the call under test.
+ */
+export interface FakeSubprocessRuntime {
+  /** Every spawn spec the service received, in call order. */
+  readonly spawns: SubprocessSpawnSpec[]
+  /** Answer the next `spawn`; unset is a test defect, reported by throwing. */
+  answer?: (spec: SubprocessSpawnSpec) => SubprocessHandle
+  spawn(spec: SubprocessSpawnSpec): SubprocessHandle
+}
+
 /** One temp workspace and the context serving it. */
 export interface Harness {
   readonly workspace: string
   readonly outside: string
   readonly ctx: Context
   readonly scope: WorkspaceFileScope
+  /** The scripted subprocess seam; `history` spawns `git` through it. */
+  readonly subprocess: FakeSubprocessRuntime
   /**
    * The service under test, at the given caps. One per test: the service key is
    * global to the Context, so a second call with caps is a defect in the test.
@@ -56,12 +72,22 @@ export async function openWorkspace(prefix: string): Promise<Harness> {
     workspaceRoot: workspace,
     resolve: () => ({ mode: 'workspace-write', workspaceRoot: workspace }),
   } as never)
+  const subprocess: FakeSubprocessRuntime = {
+    spawns: [],
+    spawn(spec) {
+      subprocess.spawns.push(spec)
+      if (subprocess.answer === undefined) throw new Error('no scripted subprocess answer; assign harness.subprocess.answer')
+      return subprocess.answer(spec)
+    },
+  }
+  ctx.provide('subprocess', subprocess as never)
   let service: WorkspaceFiles | undefined
   return {
     workspace,
     outside,
     ctx,
     scope: fileScope(workspace),
+    subprocess,
     endpoint: (caps) => {
       if (service !== undefined) {
         if (caps !== undefined) throw new Error('the harness serves one WorkspaceFiles per test; hoist the endpoint')

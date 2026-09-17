@@ -373,6 +373,20 @@
   position: relative;
 }
 
+/* Pinned section label: static (no toggle, no menu) and indented to the
+   session-row title column, matching the overflow button's 28px. */
+.pinnedHeader {
+  display: flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 12px 0 28px;
+  box-sizing: border-box;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+  user-select: none;
+}
+
 .groupSection + .groupSection {
   margin-top: 4px;
 }

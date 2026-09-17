@@ -20,6 +20,7 @@ import { FilesBody } from '../src/client/FilesBody.tsx'
 import type { FilesBodyProps } from '../src/client/FilesBody.tsx'
 import { zh } from '../src/client/locales.ts'
 import { createFilesStore } from '../src/client/store.ts'
+import { opsOf, scriptedOps } from './scripted-ops.client.ts'
 import { scriptedList } from './scripted-list.client.ts'
 import type { ScriptedList } from './scripted-list.client.ts'
 import type { TabId } from '@deepseek-ai/dsh-client-ui-dockkit'
@@ -27,6 +28,9 @@ import type { TabId } from '@deepseek-ai/dsh-client-ui-dockkit'
 export const SESSION = 's-test' as SessionId
 export const ROOT = '/work/app'
 export const TAB = 'tab-1' as TabId
+
+/** Shared empty Workspace list: the harness's `useWorkspaces` snapshot. */
+const EMPTY_WORKSPACES: readonly never[] = []
 
 /** Test-local selector hook over a framework-neutral store instance. */
 function hookOf<T>(inst: { subscribe: (fn: () => void) => () => void; getSnapshot: () => T }) {
@@ -61,7 +65,7 @@ export interface Mounted {
 function harness(cwd: string | null) {
   const instance = createFilesStore().create()
   const script = scriptedList()
-  const face = filesFace(script.list)(SESSION, instance.actions)
+  const face = filesFace(opsOf(scriptedOps(script.list)), () => undefined)(SESSION, instance.actions)
   const controller = new AbortController()
   const tabActions: MockedTabActions = {
     openResource: vi.fn<SidebarRightTabActions['openResource']>(),
@@ -83,6 +87,9 @@ function harness(cwd: string | null) {
     }),
     sessionId: SESSION,
     useSessions: <S,>(sel: (s: SessionListState) => S) => sel(sessions),
+    // The header's location menu reads the Workspace list; a spec that needs
+    // jump targets mounts over this harness with its own items.
+    useWorkspaces: <S,>(sel: (s: { items: readonly never[] }) => S) => sel({ items: EMPTY_WORKSPACES }),
     useStore: hookOf(instance),
     actions: instance.actions,
     ...face,

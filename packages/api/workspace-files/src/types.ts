@@ -2,14 +2,16 @@
  * Wire types of the `workspaceFiles` Remote namespace. Types only: generated
  * Remote clients consume this module without Host runtime code.
  *
- * Two path vocabularies leave here, and each method uses exactly one:
+ * Paths arrive in the two vocabularies every method's `path` argument accepts:
+ * an absolute path in the filesystem's execution world, or a path relative to
+ * the Session's workspace root. Results answer in one of two:
  *
- * - `read`, `readBytes`, `stat`, and `changes` name a file by its absolute path in the
- *   filesystem's execution world, because their consumer is the Client
- *   resource system, whose `dsh-resource://file/session/<id>/<path>` address carries that
- *   same path.
- * - `list` speaks workspace paths — the same syntax its `path` argument accepts —
- *   because its consumer is a tree rooted at the workspace root.
+ * - `read`, `readBytes`, `readAll`, `readRelated`, `stat`, and `history` report the
+ *   file's absolute path, because their consumer is the Client resource system,
+ *   whose `dsh-resource://file/session/<id>/<path>` address carries that same
+ *   path.
+ * - `list` reports the listed directory as a workspace path when the root
+ *   contains it, and as its absolute path otherwise.
  *
  * @module @deepseek-ai/dsh-api-workspace-files/types
  */
@@ -97,12 +99,13 @@ export interface WorkspaceDirectoryEntry {
   readonly size?: number
 }
 
-/** Direct children of one workspace directory. */
+/** Direct children of one listed directory. */
 export interface WorkspaceDirectoryListing {
   /**
-   * The listed directory as a workspace path, relative to the workspace root
-   * and empty for the root itself. A child's path is this value joined with
-   * {@link WorkspaceDirectoryEntry.name} by `/`.
+   * The listed directory as a workspace path when the workspace root contains
+   * it — relative to that root and empty for the root itself — or as its
+   * absolute path in the filesystem's execution world otherwise. A child's
+   * path is this value joined with {@link WorkspaceDirectoryEntry.name} by `/`.
    */
   readonly path: string
   /**
@@ -112,6 +115,52 @@ export interface WorkspaceDirectoryListing {
   readonly entries: readonly WorkspaceDirectoryEntry[]
   /** Whether the entry cap dropped children from {@link entries}. */
   readonly truncated: boolean
+}
+
+/**
+ * The absolute path one `rename` or `delete` changed. The two mutations are
+ * workspace-confined: neither accepts an entry whose directory leaves the
+ * Session's workspace root.
+ */
+export interface WorkspaceFileMutation {
+  /**
+   * Absolute path of the entry after `rename`, or of the entry `delete`
+   * deleted, in the same form as {@link WorkspaceFileStat.absolutePath}.
+   */
+  readonly absolutePath: string
+}
+
+/** One commit that touched a file, as `git log` reports it. */
+export interface WorkspaceFileHistoryEntry {
+  /** Full commit hash. */
+  readonly hash: string
+  /** Abbreviated commit hash. */
+  readonly shortHash: string
+  /** Commit author name. */
+  readonly author: string
+  /** Author date as an ISO-8601 string. */
+  readonly date: string
+  /** First line of the commit message. */
+  readonly subject: string
+  /** Lines the commit added to the file; 0 when git reports the change as binary. */
+  readonly additions: number
+  /** Lines the commit deleted from the file; 0 when git reports the change as binary. */
+  readonly deletions: number
+}
+
+/** The git history of one file, newest commit first. */
+export interface WorkspaceFileHistory {
+  /**
+   * Absolute path of the file whose history this is, in the same form as
+   * {@link WorkspaceFileStat.absolutePath}.
+   */
+  readonly path: string
+  /**
+   * Commits that touched the file, newest first. Empty whenever the file has
+   * no history reachable from its directory: not a repository, never
+   * committed, or no git executable.
+   */
+  readonly entries: readonly WorkspaceFileHistoryEntry[]
 }
 
 /**
@@ -144,9 +193,9 @@ export type WorkspaceFileWatchFrame =
 
 declare module '@deepseek-ai/dsh-typert-protocol' {
   interface RemoteErrorDetailsMap {
-    /** No entry exists at that path inside the workspace. */
+    /** No entry exists at that path. */
     'workspace-file/not-found': { readonly path: string }
-    /** The directory listing path resolves outside the session's workspace root. */
+    /** A rename or removal targets an entry whose directory leaves the Session's workspace root. */
     'workspace-file/outside-workspace': { readonly path: string }
     /** The requested page exceeds the configured byte cap; nothing is returned. */
     'workspace-file/too-large': { readonly path: string; readonly limit: number }

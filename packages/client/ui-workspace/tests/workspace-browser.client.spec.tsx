@@ -1638,4 +1638,126 @@ describe('WorkspaceBrowser', () => {
     const row = screen.getByText('Needle A').closest('[role="treeitem"]') as HTMLElement
     expect(row.hasAttribute('draggable')).toBe(false)
   })
+
+  it('leads with the pinned section and moves a pinned row out of its Workspace group', () => {
+    const updatedAt = Date.now()
+    const b = mount({
+      useSessions: hook(sessionState([summary('alpha-s', updatedAt - 60_000), summary('beta-s', updatedAt)])),
+      useWorkspaces: hook(workspaceState([workspace('alpha', ['alpha-s']), workspace('beta', ['beta-s'])])),
+    })
+    // Nothing pinned: no section, no label.
+    expect(screen.queryByText('已固定')).toBeNull()
+
+    act(() => { b.store.actions.setPinned('beta-s', true) })
+
+    const label = screen.getByText('已固定')
+    const pinnedRow = screen.getByText('beta-s').closest('[role="treeitem"]') as HTMLElement
+    // The section leads the list: label, its row, then every Workspace header.
+    expect(screen.getAllByRole('treeitem')[0]).toBe(pinnedRow)
+    expect(pinnedRow.compareDocumentPosition(label) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy()
+    // A pinned row keeps the ordinary row look, time, and open behavior, but
+    // never starts a reorder (its pinned position is the pin order itself).
+    expect(pinnedRow.textContent).toContain('刚刚')
+    expect(pinnedRow.getAttribute('draggable')).toBe('false')
+    fireEvent.click(pinnedRow)
+    expect(b.props.open).toHaveBeenCalledWith(sid('beta-s'))
+
+    // Its own group now lists only the Sessions that stayed there.
+    fireEvent.click(screen.getByText('beta'))
+    expect(screen.queryByRole('button', { name: '展开其余 1 个会话' })).toBeNull()
+    expect(screen.getAllByText('beta-s')).toHaveLength(1)
+    expect(screen.getByText('已固定')).toBeTruthy()
+  })
+
+  it('pins and unpins a Session through its row menu and the persisted store', () => {
+    const b = mount({
+      useSessions: hook(sessionState([summary('alpha-s', 2)])),
+      useWorkspaces: hook(workspaceState([workspace('alpha', ['alpha-s'])])),
+    })
+    fireEvent.click(screen.getByText('alpha'))
+    const menuButton = () => screen.getByRole('button', { name: '会话“alpha-s”的操作' })
+
+    fireEvent.click(menuButton())
+    fireEvent.click(screen.getByRole('menuitem', { name: '固定到顶部' }))
+    expect(b.store.getSnapshot().pinnedSessionIds).toEqual(['alpha-s'])
+    expect(screen.getByText('已固定')).toBeTruthy()
+    expect(screen.getAllByText('alpha-s')).toHaveLength(1)
+    // The expanded group is left without its pinned member.
+    expect(screen.queryByText('收起')).toBeNull()
+
+    fireEvent.click(menuButton())
+    fireEvent.click(screen.getByRole('menuitem', { name: '取消固定' }))
+    expect(b.store.getSnapshot().pinnedSessionIds).toEqual([])
+    expect(screen.queryByText('已固定')).toBeNull()
+    expect(screen.getByText('alpha-s')).toBeTruthy()
+  })
+
+  it('shows the pinned section as the whole list when every group member is pinned', () => {
+    const b = mount({
+      useSessions: hook(sessionState([summary('loose', 1)])),
+      useWorkspaces: hook(workspaceState([])),
+    })
+    expect(screen.getByText('未分组')).toBeTruthy()
+    act(() => { b.store.actions.setPinned('loose', true) })
+    // Ungrouped loses its only member and does not render at all; the empty
+    // state stays away because the pinned section has a row.
+    expect(screen.queryByText('未分组')).toBeNull()
+    expect(screen.queryByText('暂无会话')).toBeNull()
+    expect(screen.getByText('已固定')).toBeTruthy()
+    expect(screen.getByText('loose')).toBeTruthy()
+  })
+
+  it('drops an archived pinned Session from the section and tolerates a vanished id', () => {
+    const b = mount({
+      useSessions: hook(sessionState([summary('kept', 2), summary('pinned', 1)])),
+      useWorkspaces: hook(workspaceState([workspace('alpha', ['kept', 'pinned'])])),
+    })
+    fireEvent.click(screen.getByText('alpha'))
+    act(() => { b.store.actions.setPinned('pinned', true) })
+    act(() => { b.store.actions.setPinned('ghost', true) })
+    expect(screen.getByText('已固定')).toBeTruthy()
+    expect(screen.getAllByText('pinned')).toHaveLength(1)
+    // An id without a Session summary is tolerated: nothing renders for it.
+    expect(screen.queryByText('ghost')).toBeNull()
+
+    rerender(b, {
+      useWorkspaces: hook(workspaceState([workspace('alpha', ['kept', 'pinned'])], [sid('pinned')])),
+    })
+    expect(screen.queryByText('已固定')).toBeNull()
+    expect(screen.queryByText('pinned')).toBeNull()
+    expect(screen.getByText('kept')).toBeTruthy()
+    // The pin survives for an unarchive: the id stays persisted.
+    expect(b.store.getSnapshot().pinnedSessionIds).toEqual(['ghost', 'pinned'])
+  })
+
+  it('keeps the flat list single: no pinned section, and the row menu still unpins', () => {
+    const b = mount({
+      useSessions: hook(sessionState([summary('one', 2)])),
+      useWorkspaces: hook(workspaceState([workspace('alpha', ['one'])])),
+    })
+    b.store.actions.setGroupBy('flat')
+    act(() => { b.store.actions.setPinned('one', true) })
+    // The single flat list keeps one row and adds no section above it.
+    expect(screen.queryByText('已固定')).toBeNull()
+    expect(screen.getAllByRole('treeitem')).toHaveLength(1)
+    fireEvent.click(screen.getByRole('button', { name: '会话“one”的操作' }))
+    expect(screen.getByRole('menuitem', { name: '取消固定' })).toBeTruthy()
+  })
+
+  it('scrolls a pinned search hit into view from the pinned section', () => {
+    const b = mount({
+      useSessions: hook(sessionState([
+        summary('pinned-target', 1, { displayTitle: 'Pinned notes' }),
+        summary('other', 2),
+      ])),
+      useWorkspaces: hook(workspaceState([workspace('alpha', ['pinned-target', 'other'])])),
+    })
+    act(() => { b.store.actions.setPinned('pinned-target', true) })
+    fireEvent.change(screen.getByPlaceholderText('搜索会话…'), { target: { value: 'pinned notes' } })
+    fireEvent.click(screen.getByRole('treeitem'))
+
+    const targetRow = screen.getByText('Pinned notes').closest('[role="treeitem"]')
+    expect(targetRow).toBeTruthy()
+    expect(scrollIntoView.mock.instances.at(-1)).toBe(targetRow)
+  })
 })

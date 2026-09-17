@@ -1,5 +1,5 @@
 ---
-description: "Workspace file service for the web GUI: bounded file reads through the composed filesystem, plus directory listing and instrumented filesystem observation inside the Session workspace root."
+description: "Workspace file service for the web GUI: bounded file reads through the composed filesystem, directory listing anywhere the backend reaches, workspace-confined rename and removal, per-file git history, and instrumented filesystem observation inside the Session workspace root."
 kind: "package-reference"
 ---
 
@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-Use this package to preview files readable through a Session's filesystem from the web client. It reads UTF-8 text by page, reads bounded byte windows or complete files, resolves related files from a base file's directory, and reports file metadata. File reads may target paths outside the workspace; directory listing and instrumented filesystem observations remain workspace-scoped. The service exposes no mutation operation.
+Use this package to preview files readable through a Session's filesystem from the web client. It reads UTF-8 text by page, reads bounded byte windows or complete files, resolves related files from a base file's directory, and reports file metadata. File reads and directory listings may target any path the filesystem backend reaches. `rename` and `delete` are mutations confined to the Session workspace root, and `history` reports a file's git log. Instrumented filesystem observations remain workspace-scoped.
 
 ## Table of Contents
 
@@ -25,7 +25,7 @@ Use this package to preview files readable through a Session's filesystem from t
 <a id="use-this-package"></a>
 ## Use this package
 
-Mount the package beside `dsh-fs`, `dsh-sandbox-policy`, the Session store, and the Typert Gateway; the bundle does so right after the Session Controller. Every method takes the Session identity on the wire, so a Client calls `remote.workspaceFiles.read(sessionId, path, range, signal)`, `stat(sessionId, path, signal)`, `readBytes(sessionId, path, range, signal)`, `list(sessionId, path, signal)`, or `changes(sessionId, signal)` and never names a root itself. The Host reads a live Session header or uses persistence `stat` for a cold Session; it does not activate an Agent, read the event body, or borrow a parent Session's root. Session persistence is optional for live reads, but without it a cold Session cannot resolve and the Gateway returns `gateway/lookup-not-found`.
+Mount the package beside `dsh-fs`, `dsh-sandbox-policy`, the Session store, the subprocess provider, and the Typert Gateway; the bundle does so right after the Session Controller. Every method takes the Session identity on the wire, so a Client calls `remote.workspaceFiles.read(sessionId, path, range, signal)`, `stat(sessionId, path, signal)`, `readBytes(sessionId, path, range, signal)`, `list(sessionId, path, signal)`, `rename(sessionId, path, newName, signal)`, `delete(sessionId, path, signal)`, `history(sessionId, path, signal)`, or `changes(sessionId, signal)` and never names a root itself. The Host reads a live Session header or uses persistence `stat` for a cold Session; it does not activate an Agent, read the event body, or borrow a parent Session's root. Session persistence is optional for live reads, but without it a cold Session cannot resolve and the Gateway returns `gateway/lookup-not-found`.
 
 | Method | Returns | Purpose |
 |---|---|---|
@@ -34,12 +34,25 @@ Mount the package beside `dsh-fs`, `dsh-sandbox-policy`, the Session store, and 
 | `readBytes(path, { offset?, length? })` | `WorkspaceFileBytes` = stat + `{ offset, data, eof }` | One window of raw bytes from any regular file, base64-encoded |
 | `readAll(path)` | `WorkspaceFileBytes` with `offset: 0`, `eof: true` | Complete raw bytes under `maxFileBytes`; oversized files fail instead of being truncated |
 | `readRelated(path, relativePath)` | `WorkspaceFileBytes` | Complete bytes of a file resolved from the base file's directory on the Host |
-| `list(path)` | `WorkspaceDirectoryListing { path, entries, truncated }` | Direct children of one directory |
+| `list(path)` | `WorkspaceDirectoryListing { path, entries, truncated }` | Direct children of one directory, anywhere the backend reaches |
+| `rename(path, newName)` | `WorkspaceFileMutation { absolutePath }` | Rename one entry to a new name in the same workspace directory |
+| `delete(path)` | `WorkspaceFileMutation { absolutePath }` | Permanently delete one workspace entry, a directory with everything below it included |
+| `history(path)` | `WorkspaceFileHistory { path, entries }` | One file's git commits, newest first; empty when git reports none |
 | `changes()` | stream of `WorkspaceFileWatchFrame` | Subscription readiness, then filesystem observations inside the workspace root |
 
 ### Addressing and paths
 
-`read`, `readBytes`, `readAll`, `readRelated`, and `stat` accept an absolute path or one relative to the selected Session's workspace root. The composed filesystem decides whether the path is readable; the service does not impose workspace containment on file reads. `readRelated` resolves a relative filesystem path from the base file's directory, including when either file is outside the workspace. These methods report the file's absolute path in the filesystem's execution world. `list` remains workspace-scoped and reports the listed directory relative to that root. `changes` likewise reports only instrumented filesystem observations inside the workspace root.
+`read`, `readBytes`, `readAll`, `readRelated`, `stat`, `list`, `rename`, `delete`, and `history` accept an absolute path or one relative to the selected Session's workspace root. The composed filesystem decides whether a path is readable; the service imposes no workspace containment on reads, listings, or `history`. `readRelated` resolves a relative filesystem path from the base file's directory, including when either file is outside the workspace. These methods report the file's absolute path in the filesystem's execution world. `list` reports a directory inside the root as a workspace path and one outside it as its absolute path. `rename` and `delete` are the exception: both refuse an entry whose resolved directory leaves the workspace root with `workspace-file/outside-workspace`. `changes` reports only instrumented filesystem observations inside the workspace root.
+
+### Mutations
+
+`rename(path, newName)` changes the entry's name without moving it: `newName` must be one path segment, non-empty and unpadded, without `/`, `\`, or NUL, and neither `.` nor `..`; anything else is a `gateway/bad-request`. Its parent directory, resolved through the filesystem, must stay inside the workspace root. The answer is the entry's new absolute path.
+
+`delete(path)` deletes the entry permanently: a regular file, a symlink, or a directory with everything below it. It refuses the workspace root itself with `gateway/bad-request` and any resolved path outside the workspace root with `workspace-file/outside-workspace`; a missing path is `workspace-file/not-found`. The answer is the removed entry's absolute path. Both mutations resolve the entry through the filesystem first, so a final symlink is followed and the operation applies to its target.
+
+### History
+
+`history(path)` runs `git log --follow -n 50 --date=iso-strict --format=… --numstat -- <basename>` in the file's directory through the subprocess seam and parses the records. Each entry carries `hash`, `shortHash`, `author`, an ISO-8601 `date`, `subject`, and the `additions`/`deletions` git reports for that commit; a binary change reports `0` for both counts. The file may be inside or outside the workspace. A directory that is not a repository, a file git never committed, and a missing git executable all return `{ path, entries: [] }` instead of failing; caller cancellation still propagates.
 
 ### Pages
 
@@ -51,7 +64,7 @@ Mount the package beside `dsh-fs`, `dsh-sandbox-policy`, the Session store, and 
 
 ### File-read and directory checks
 
-Every operation first uses `lstat` to reject a missing path, a final symlink, or the wrong file kind. File operations then resolve and read through the composed filesystem without an additional workspace-containment check. `list` alone requires the resolved directory to remain inside the workspace root. The configured page, window, complete-file, and listing caps still apply. Text pages additionally reject invalid UTF-8 and NUL bytes; byte reads do not decode content. An empty path is a `gateway/bad-request`.
+Every operation first uses `lstat` to reject a missing path, a final symlink, or the wrong file kind. File operations then resolve and read through the composed filesystem without an additional workspace-containment check, and `list` lists any directory it resolves. Only `rename` and `delete` add a containment check, on the resolved parent directory or entry. The configured page, window, complete-file, and listing caps still apply. Text pages additionally reject invalid UTF-8 and NUL bytes; byte reads do not decode content. An empty path is a `gateway/bad-request`.
 
 ### The change feed
 
@@ -70,7 +83,7 @@ The generated [configuration catalog](../../../docs/config-catalog.md#deepseek-a
 
 ### Failures
 
-Each failure is one `RemoteError` code with typed details, declared in [`src/types.ts`](src/types.ts): `workspace-file/not-found`, `workspace-file/outside-workspace` (directory listing only), `workspace-file/too-large` (with `limit`, the applicable page, window, or complete-file cap), `workspace-file/not-text`, `workspace-file/not-regular-file` (`kind`: `directory`, `symlink`, or `other`), and `workspace-file/not-directory` (`kind`: `file`, `symlink`, or `other`). Callers branch on the code, never on message text.
+Each failure is one `RemoteError` code with typed details, declared in [`src/types.ts`](src/types.ts): `workspace-file/not-found`, `workspace-file/outside-workspace` (`rename` and `delete` only), `workspace-file/too-large` (with `limit`, the applicable page, window, or complete-file cap), `workspace-file/not-text`, `workspace-file/not-regular-file` (`kind`: `directory`, `symlink`, or `other`), and `workspace-file/not-directory` (`kind`: `file`, `symlink`, or `other`). Callers branch on the code, never on message text.
 
 ### Client file resources
 
@@ -92,13 +105,13 @@ One supervised `changes` stream serves every followed file in a Session. Followe
 
 ### Design concept
 
-Reads through `ctx.fs` use the backend's read authority; the sandboxing backend fences writes and edits, not reads. A Typert lookup derives `WorkspaceFileScope` from a live Session header or the persistence service's header-only `stat`, so cold subagent Sessions need neither Agent activation nor event-body reads. The service adds regular-file checks and bounded transfer, while workspace containment belongs only to directory listing and change observation. A page is cut from `streamText`, which decodes and rejects non-UTF-8 chunk by chunk: the cutter counts lines before the window without keeping them, admits each in-window segment against the byte cap before buffering it, and returns at the first character past the window. One `stat` before the stream names the version and size the page reports.
+Reads through `ctx.fs` use the backend's read authority; the sandboxing backend fences writes and edits, not reads. A Typert lookup derives `WorkspaceFileScope` from a live Session header or the persistence service's header-only `stat`, so cold subagent Sessions need neither Agent activation nor event-body reads. The service adds regular-file checks and bounded transfer; workspace containment belongs only to `rename` and `delete`, which call `node:fs` because the `ctx.fs` seam exposes neither operation, while change observation keeps its own root filter. `history` runs `git log` through the subprocess seam. A page is cut from `streamText`, which decodes and rejects non-UTF-8 chunk by chunk: the cutter counts lines before the window without keeping them, admits each in-window segment against the byte cap before buffering it, and returns at the first character past the window. One `stat` before the stream names the version and size the page reports.
 
 ### Source map
 
 | File | Role |
 |---|---|
-| [`src/index.ts`](src/index.ts) | `WorkspaceFiles`: the `workspaceFiles` service and Remote namespace, `Config`, the gates, the page cutter, `read`, `readBytes`, `readAll`, `readRelated`, `stat`, `list` |
+| [`src/index.ts`](src/index.ts) | `WorkspaceFiles`: the `workspaceFiles` service and Remote namespace, `Config`, the gates, the page cutter, `parseGitLog`, `read`, `readBytes`, `readAll`, `readRelated`, `stat`, `list`, `rename`, `delete`, `history` |
 | [`src/changes.ts`](src/changes.ts) | `WorkspaceChangeFeed`: `fs/observed` subscription and one queue per open `changes` generation |
 | [`src/types.ts`](src/types.ts) | Wire types and the `RemoteErrorDetailsMap` codes, published as `./types` for Client packages |
 | [`src/client/index.ts`](src/client/index.ts), [`provider.ts`](src/client/provider.ts), [`change-feed.ts`](src/client/change-feed.ts) | Browser plugin, file metadata, and per-Session change feed |
@@ -137,7 +150,10 @@ None; this package neither assembles nor sends a provider request.
 <a id="known-limitations-and-deferred-work"></a>
 
 - **Instrumented operations only** — `changes` relays `fs/observed` emissions; a file changed by a subprocess, a shell command, or the user's editor produces no frame.
-- **Directory scope only** — `list` and `changes` stay inside the Session workspace even though file preview reads may use any path readable by the filesystem backend.
+- **Change observation stays workspace-scoped** — `changes` filters to the Session workspace root even though reads, listings, and `history` may use any path the filesystem backend reaches.
+- **Mutations bypass the filesystem seam** — `rename` and `delete` call `node:fs` because `ctx.fs` exposes no rename or remove operation, so a sandboxing or remote backend's write rules do not apply to them; each method keeps its own `ctx.fs` containment check against the Session workspace root.
+- **Mutations resolve a final symlink first** — both read the entry through `ctx.fs`, so the operation applies to the link's target: a link pointing outside the workspace root is refused, and one pointing inside renames or removes the target rather than the link.
+- **History shells out to git** — `history` returns an empty history on every non-zero exit, so a machine without `git`, a directory outside a repository, and a file git never committed are indistinguishable from one another.
 - **No total line count** — a page reports `eof`, not how many lines follow; a consumer that needs the total pages to the end or estimates from `bytes`.
 - **One giant line has no page** — a single line above `maxBytes` fails `too-large` at every window that includes it, because pages are cut by lines, not bytes.
 - **Reads are not transactional** — result metadata comes from stat before content is read; a concurrent write can make the reported version and returned contents differ.

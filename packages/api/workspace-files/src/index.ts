@@ -1,14 +1,17 @@
 /**
- * Workspace file service: read-only file previews, workspace directory
- * listings, and the filesystem-observation change feed, exposed as
- * `workspaceFiles`.
+ * Workspace file service: file previews, directory listings, workspace-confined
+ * rename and removal, file history, and the filesystem-observation change feed,
+ * exposed as `workspaceFiles`.
  *
  * File reads follow the composed filesystem's read access, including paths
- * outside the workspace. The selected Session header supplies the base for
- * relative paths, with the sandbox policy root as its no-cwd fallback, not a
- * read-containment restriction. Directory listings and change observations
- * remain workspace-scoped. File-kind checks and configured read caps apply to
- * every preview; this service exposes no mutations.
+ * outside the workspace, and so do directory listings. The selected Session
+ * header supplies the base for relative paths, with the sandbox policy root as
+ * its no-cwd fallback, not a read-containment restriction. `rename` and
+ * `delete` are deliberately workspace-confined, and they call `node:fs`
+ * directly because the `ctx.fs` seam exposes no rename or remove operation.
+ * `history` reads a file's `git log` through the subprocess seam. Change
+ * observations remain workspace-scoped. File-kind checks and configured read
+ * caps apply to every preview.
  *
  * A page is cut from `streamText`, which decodes and rejects non-UTF-8 as it
  * goes, so the file is read only up to the first character past the page and
@@ -19,6 +22,7 @@
  * file content across the wire, which is a different level of exposure.
  */
 
+import { rename, rm } from 'node:fs/promises'
 import { posix, win32 } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -28,6 +32,7 @@ import type {} from '@deepseek-ai/dsh-sandbox-policy'
 import type {} from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-persistence'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
+import type { SubprocessHandle, SubprocessOutcome, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
 import { Remote, RemoteError, TypertRemoteService, type TypertLookup } from '@deepseek-ai/dsh-typert-protocol'
 import { WorkspaceChangeFeed } from './changes.ts'
 import type {
@@ -35,6 +40,9 @@ import type {
   WorkspaceDirectoryEntry,
   WorkspaceDirectoryListing,
   WorkspaceFileBytes,
+  WorkspaceFileHistory,
+  WorkspaceFileHistoryEntry,
+  WorkspaceFileMutation,
   WorkspaceFileRange,
   WorkspaceFileStat,
   WorkspaceFileText,
@@ -94,12 +102,119 @@ interface Page {
 /** The byte text never carries: its presence marks a page as binary. */
 const NUL = String.fromCharCode(0)
 
+/** The unit-separator byte `GIT_LOG_FORMAT` joins one commit's fields with. */
+const GIT_LOG_FIELD_SEPARATOR = '\u001f'
+
+/** `git log` record format: full hash, short hash, author, ISO-8601 author date, subject. */
+const GIT_LOG_FORMAT = `%H${GIT_LOG_FIELD_SEPARATOR}%h${GIT_LOG_FIELD_SEPARATOR}%an${GIT_LOG_FIELD_SEPARATOR}%ad${GIT_LOG_FIELD_SEPARATOR}%s`
+
+/** Commit cap on one file's history: the newest records the timeline shows. */
+const GIT_LOG_LIMIT = 50
+
+/** Retained `git log` stdout cap; the bounded record count stays far below it. */
+const GIT_LOG_MAX_BYTES = 1024 * 1024
+
+/** Retained `git log` stderr tail cap; the tail is diagnostic and never read. */
+const GIT_LOG_STDERR_MAX_BYTES = 64 * 1024
+
+/**
+ * Terminate-escalation grace for one `git log` call. Fixed: it bounds how long
+ * a terminating child may take, and is not a deployment policy.
+ */
+const GIT_LOG_GRACE_MS = 5_000
+
 /** Refuse anything the wire schema admits as a number but a window cannot use: only safe integers index a file. */
 function integerAtLeast(value: number, min: number, name: string): number {
   if (!Number.isSafeInteger(value) || value < min) {
     throw new RemoteError('gateway/bad-request', `${name} must be a safe integer of at least ${min}`, {})
   }
   return value
+}
+
+/**
+ * Validate one rename name as a single path segment: a rename may not move an
+ * entry to another directory. Rejects an empty or whitespace-padded name, any
+ * separator or NUL byte, and the `.` / `..` entries.
+ * @param newName - the requested basename on the wire.
+ * @returns the accepted name, unchanged.
+ */
+function segmentName(newName: string): string {
+  if (
+    newName.length === 0
+    || newName !== newName.trim()
+    || newName === '.'
+    || newName === '..'
+    || newName.includes('/')
+    || newName.includes('\\')
+    || newName.includes(NUL)
+  ) {
+    throw new RemoteError('gateway/bad-request', `"${newName}" must be a single path segment`, {})
+  }
+  return newName
+}
+
+/**
+ * One numstat field as a line count: a decimal count, or 0 when git reports the
+ * change as binary (`-`).
+ * @param text - the additions or deletions field of one numstat line.
+ * @returns the parsed count, or 0 when the field is not a number.
+ */
+function lineCount(text: string): number {
+  const count = Number(text)
+  return Number.isFinite(count) ? count : 0
+}
+
+/**
+ * One field of a split line, empty when the line carried fewer fields.
+ * @param fields - the line split on its separator.
+ * @param index - zero-based field index.
+ * @returns the field, or an empty string when the line is short.
+ */
+function field(fields: readonly string[], index: number): string {
+  return fields[index] ?? ''
+}
+
+/**
+ * Parse the stdout of the `git log` invocation `history` runs: one entry per
+ * commit, in git's output order. A record line carries five unit-separated
+ * fields, and the tab-separated numstat lines that follow it — one per changed
+ * path, or none — supply the line counts. Blank lines separate records and are
+ * ignored.
+ * @param stdout - complete raw stdout of `git log --format=… --numstat`.
+ * @returns one entry per record, in the order git printed them.
+ */
+export function parseGitLog(stdout: string): WorkspaceFileHistoryEntry[] {
+  const entries: WorkspaceFileHistoryEntry[] = []
+  let record: {
+    hash: string
+    shortHash: string
+    author: string
+    date: string
+    subject: string
+    additions: number
+    deletions: number
+  } | undefined
+  for (const line of stdout.split('\n')) {
+    if (line.includes(GIT_LOG_FIELD_SEPARATOR)) {
+      const fields = line.split(GIT_LOG_FIELD_SEPARATOR)
+      record = {
+        hash: field(fields, 0),
+        shortHash: field(fields, 1),
+        author: field(fields, 2),
+        date: field(fields, 3),
+        subject: fields.slice(4).join(GIT_LOG_FIELD_SEPARATOR),
+        additions: 0,
+        deletions: 0,
+      }
+      entries.push(record)
+      continue
+    }
+    const counts = line.split('\t')
+    if (record === undefined || counts.length < 3) continue
+    record.additions += lineCount(field(counts, 0))
+    record.deletions += lineCount(field(counts, 1))
+  }
+  return entries
 }
 
 /**
@@ -169,6 +284,17 @@ function workspacePathOf(rootUrl: string, targetUrl: string): string {
   return target.slice(root.length + 1).split('/').map(decodeURIComponent).join('/')
 }
 
+/**
+ * The path implementation matching one backend process path: POSIX when the
+ * path is `/`-rooted, Windows otherwise. The host platform may differ from the
+ * execution platform the process path belongs to.
+ * @param absolute - an absolute path in the filesystem's execution world.
+ * @returns the matching `node:path` implementation.
+ */
+function processPathsFor(absolute: string): typeof posix {
+  return absolute.startsWith('/') ? posix : win32
+}
+
 /** Strip the resolved child target: the wire carries names and metadata only. */
 function directoryEntry(child: FsDirEntry): WorkspaceDirectoryEntry {
   return {
@@ -178,9 +304,16 @@ function directoryEntry(child: FsDirEntry): WorkspaceDirectoryEntry {
   }
 }
 
-/** Host Remote file reads and workspace directory observations over the composed filesystem. */
+/**
+ * Host Remote file reads, directory listings, workspace-confined rename and
+ * removal, per-file git history, and the instrumented filesystem change feed.
+ *
+ * `rename` and `delete` are confined to the Session's workspace root and call
+ * `node:fs` because the `ctx.fs` seam exposes neither operation; every other
+ * path-taking method uses `ctx.fs`, whose access rules then apply.
+ */
 export class WorkspaceFiles extends TypertRemoteService {
-  static inject = ['fs', 'sandboxPolicy', 'sessions', 'typert']
+  static inject = ['fs', 'sandboxPolicy', 'sessions', 'typert', 'subprocess']
 
   static Config: z<Config> = z.object({
     maxBytes: z.number().step(1).min(1).default(2 * 1024 * 1024),
@@ -309,7 +442,7 @@ export class WorkspaceFiles extends TypertRemoteService {
     }
     const { target } = await this.locateFile(workspaceFileScope, path, signal)
     const absolute = this.ctx.fs.processPath(target)
-    const paths = absolute.startsWith('/') ? posix : win32
+    const paths = processPathsFor(absolute)
     return this.readAll(workspaceFileScope, paths.resolve(paths.dirname(absolute), relative), signal)
   }
 
@@ -327,11 +460,13 @@ export class WorkspaceFiles extends TypertRemoteService {
   }
 
   /**
-   * List the direct children of one directory inside the Session's workspace.
+   * List the direct children of one existing directory readable by the
+   * filesystem backend, anywhere that backend can reach.
    * @param workspaceFileScope - header-derived workspace root for the Session identity on the wire.
-   * @param path - workspace path, absolute or relative to the workspace root.
+   * @param path - absolute path or path relative to the workspace root; directories outside it are allowed.
    * @param signal - caller cancellation.
-   * @returns the directory's children in the backend's stable name order, bounded by the entry cap.
+   * @returns the directory's children in the backend's stable name order, bounded by the entry
+   *   cap, and the listed directory as a workspace path or, outside the root, as its absolute path.
    */
   @Remote
   async list(workspaceFileScope: WorkspaceFileScope, path: string, signal: AbortSignal): Promise<WorkspaceDirectoryListing> {
@@ -343,13 +478,91 @@ export class WorkspaceFiles extends TypertRemoteService {
         { path, kind: entry.type },
       )
     }
-    const target = await this.confine(root, workspaceRoot, path, signal)
+    const target = await this.ctx.fs.resolve(path, { cwd: workspaceRoot, signal })
     const children = await this.ctx.fs.listDir(target, signal)
     return {
-      path: workspacePathOf(this.ctx.fs.fileUrl(root), this.ctx.fs.fileUrl(target)),
+      path: this.listingPathOf(root, target),
       entries: children.slice(0, this.config.maxEntries).map(directoryEntry),
       truncated: children.length > this.config.maxEntries,
     }
+  }
+
+  /**
+   * Rename one entry inside the Session's workspace to a new name in the same
+   * directory. The rename itself runs through `node:fs`, because the `ctx.fs`
+   * seam exposes no rename operation; the destination directory is still
+   * checked with `ctx.fs`.
+   * @param workspaceFileScope - header-derived workspace root for the Session identity on the wire.
+   * @param path - absolute path or path relative to the workspace root of the entry to rename.
+   * @param newName - the entry's new name: one path segment, without separators, `.` or `..`.
+   * @param signal - caller cancellation.
+   * @returns the renamed entry's absolute path.
+   */
+  @Remote
+  async rename(
+    workspaceFileScope: WorkspaceFileScope,
+    path: string,
+    newName: string,
+    signal: AbortSignal,
+  ): Promise<WorkspaceFileMutation> {
+    const name = segmentName(newName)
+    const { root, workspaceRoot } = await this.inspect(workspaceFileScope, path, signal)
+    const source = await this.ctx.fs.resolve(path, { cwd: workspaceRoot, signal })
+    const absolute = this.ctx.fs.processPath(source)
+    const paths = processPathsFor(absolute)
+    const directory = paths.dirname(absolute)
+    const parent = await this.ctx.fs.resolve(directory, { cwd: workspaceRoot, signal })
+    if (!this.ctx.fs.contains(root, parent)) {
+      throw new RemoteError('workspace-file/outside-workspace', `"${path}" is outside the workspace`, { path })
+    }
+    const destination = paths.join(directory, name)
+    await rename(absolute, destination)
+    return { absolutePath: destination }
+  }
+
+  /**
+   * Permanently delete one entry inside the Session's workspace: a regular
+   * file, a symlink, or a directory with everything below it. The deletion runs
+   * through `node:fs`, because the `ctx.fs` seam exposes no remove operation;
+   * the workspace root check still uses `ctx.fs`.
+   *
+   * The wire name is `delete`, not `remove`: the generated namespace service
+   * reserves `remove` for its own member, and a Remote method that shadows it
+   * is refused when the namespace installs on the Client.
+   * @param workspaceFileScope - header-derived workspace root for the Session identity on the wire.
+   * @param path - absolute path or path relative to the workspace root of the entry to delete.
+   * @param signal - caller cancellation.
+   * @returns the deleted entry's absolute path.
+   */
+  @Remote
+  async delete(workspaceFileScope: WorkspaceFileScope, path: string, signal: AbortSignal): Promise<WorkspaceFileMutation> {
+    const { root, workspaceRoot } = await this.inspect(workspaceFileScope, path, signal)
+    const target = await this.confine(root, workspaceRoot, path, signal)
+    if (this.ctx.fs.fileUrl(target) === this.ctx.fs.fileUrl(root)) {
+      throw new RemoteError('gateway/bad-request', 'the workspace root cannot be removed', {})
+    }
+    const absolute = this.ctx.fs.processPath(target)
+    await rm(absolute, { recursive: true, force: false })
+    return { absolutePath: absolute }
+  }
+
+  /**
+   * Report one file's git history, newest commit first, by running `git log`
+   * through the subprocess seam. The file may be inside or outside the
+   * workspace. A directory that is not a repository, a file git never
+   * committed, and a missing git executable all report an empty history
+   * instead of failing; caller cancellation still propagates.
+   * @param workspaceFileScope - header-derived workspace root for the Session identity on the wire.
+   * @param path - absolute path or path relative to the workspace root of the file.
+   * @param signal - caller cancellation.
+   * @returns the file's absolute path and its commits, empty when git reports none.
+   */
+  @Remote
+  async history(workspaceFileScope: WorkspaceFileScope, path: string, signal: AbortSignal): Promise<WorkspaceFileHistory> {
+    const { target } = await this.locateFile(workspaceFileScope, path, signal)
+    const absolute = this.ctx.fs.processPath(target)
+    const paths = processPathsFor(absolute)
+    return { path: absolute, entries: await this.gitLog(paths.dirname(absolute), paths.basename(absolute), signal) }
   }
 
   /**
@@ -394,7 +607,7 @@ export class WorkspaceFiles extends TypertRemoteService {
   }
   /**
    * Inspect the requested path itself before resolution follows its final
-   * component. Directory containment is checked separately by `list`.
+   * component. Containment is checked separately by the two mutations.
    */
   private async inspect(
     workspaceFileScope: WorkspaceFileScope,
@@ -419,6 +632,61 @@ export class WorkspaceFiles extends TypertRemoteService {
       throw new RemoteError('workspace-file/outside-workspace', `"${path}" is outside the workspace`, { path })
     }
     return target
+  }
+
+  /**
+   * The listed directory's workspace path when the workspace root contains it,
+   * and its absolute path otherwise, so a listing outside the root stays
+   * addressable.
+   */
+  private listingPathOf(root: FsTarget, target: FsTarget): string {
+    return this.ctx.fs.contains(root, target)
+      ? workspacePathOf(this.ctx.fs.fileUrl(root), this.ctx.fs.fileUrl(target))
+      : this.ctx.fs.processPath(target)
+  }
+
+  /**
+   * Run one bounded `git log` for a file and parse it. Every failure that is
+   * not caller cancellation reports an empty history: a directory outside a
+   * repository, a path git never committed, and a missing git executable are
+   * ordinary answers for a timeline, not service failures.
+   * @param directory - the file's directory, used as both the working directory and the `-C` argument.
+   * @param name - the file's basename, the pathspec after `--`.
+   * @param signal - caller cancellation; an abort propagates instead of reporting an empty history.
+   * @returns the parsed commits, newest first.
+   */
+  private async gitLog(directory: string, name: string, signal: AbortSignal): Promise<WorkspaceFileHistoryEntry[]> {
+    let handle: SubprocessHandle
+    try {
+      handle = this.ctx.subprocess.spawn({
+        argv: [
+          'git', '-C', directory, 'log', '--follow', '-n', String(GIT_LOG_LIMIT),
+          '--date=iso-strict', `--format=${GIT_LOG_FORMAT}`, '--numstat', '--', name,
+        ],
+        cwd: directory,
+        stdio: {
+          stdin: 'ignore',
+          stdout: { maxBytes: GIT_LOG_MAX_BYTES },
+          stderr: { maxBytes: GIT_LOG_STDERR_MAX_BYTES },
+        },
+        graceMs: GIT_LOG_GRACE_MS,
+        signal,
+      } satisfies SubprocessSpawnSpec)
+    } catch (error: unknown) {
+      if (signal.aborted) throw error
+      return []
+    }
+    let outcome: SubprocessOutcome
+    try {
+      outcome = await handle.done
+    } catch (error: unknown) {
+      if (signal.aborted) throw error
+      return []
+    }
+    if (signal.aborted) throw signal.reason
+    const stdout = handle.collected.stdout?.readFrom(0)
+    if (outcome.exitCode !== 0 || stdout === undefined || stdout.lossy) return []
+    return parseGitLog(stdout.text)
   }
 
   /**

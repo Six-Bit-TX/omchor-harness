@@ -5,7 +5,7 @@ import type { SessionPendingInteractionBase } from '@deepseek-ai/dsh-client-ui-s
 import type { ScheduleId, ScheduleRecord } from '@deepseek-ai/dsh-schedule/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import {
-  deriveFlat, deriveGroups, deriveSearchResults, orderByRecency, owningGroupKey,
+  deriveFlat, deriveGroups, derivePinned, deriveSearchResults, orderByRecency, owningGroupKey,
   pinCurrentBlank, reconcileManualOrder, visibleSessionIds, workspaceLabel, UNGROUPED_KEY,
 } from '../src/client/tree.ts'
 import { createWorkspaceViewStore } from '../src/client/stores.ts'
@@ -320,6 +320,57 @@ describe('deriveGroups', () => {
       { ...list(owned, loose), current: loose.id }, [ws], noArchive, noAttention, view(),
     )
     expect(looseGroups.find(group => group.key === UNGROUPED_KEY)!.containsCurrent).toBe(true)
+  })
+
+  it('hands pinned Sessions to the pinned section instead of their Workspace or Ungrouped', () => {
+    const owned = summary('owned', 2, '/projects/first')
+    const pinnedOwned = summary('pinned-owned', 3, '/projects/first')
+    const pinnedLoose = summary('pinned-loose', 4, '/other')
+    const groups = deriveGroups(
+      list(owned, pinnedOwned, pinnedLoose),
+      [workspace('first', ['owned', 'pinned-owned'])],
+      noArchive,
+      noAttention,
+      { expandedGroups: ['first', UNGROUPED_KEY], pinnedSessionIds: ['pinned-owned', 'pinned-loose'] },
+    )
+    // A pinned member leaves its group (count follows the visible rows) and a
+    // pinned stray never surfaces an Ungrouped bucket.
+    expect(groups.map(group => group.key)).toEqual(['first'])
+    expect(groups[0]!.sessions.map(node => node.id)).toEqual([owned.id])
+    expect(groups[0]!.sessionCount).toBe(1)
+  })
+})
+
+describe('derivePinned', () => {
+  it('keeps pin order, drops unknown and duplicated ids, and projects row facts', () => {
+    const older = { ...summary('older', 10), completed: true }
+    const newer = summary('newer', 20)
+    expect(derivePinned(list(), [], noArchive, noAttention)).toEqual([])
+
+    const rows = derivePinned(
+      list(older, newer), ['newer', 'ghost', 'older', 'newer'], noArchive, noAttention,
+    )
+    expect(rows.map(row => row.id)).toEqual([newer.id, older.id])
+    expect(rows[0]).toMatchObject({ title: 'newer', blank: false, completed: false })
+    expect(rows[1]).toMatchObject({ title: 'older', completed: true })
+  })
+
+  it('drops archived and not-otherwise-visible pinned ids', () => {
+    const kept = summary('kept', 1)
+    const gone = summary('gone', 2)
+    const staleBlank = { ...summary('stale-blank', 3), blank: true }
+    const subagent = { ...summary('subagent', 4), parentId: kept.id, origin: 'subagent' as const }
+    const currentBlank = { ...summary('current-blank', 5), blank: true }
+    const sessions = { ...list(kept, gone, staleBlank, subagent, currentBlank), current: currentBlank.id }
+    const rows = derivePinned(
+      sessions,
+      ['gone', 'stale-blank', 'subagent', 'current-blank', 'kept'],
+      archived('gone'),
+      noAttention,
+    )
+    // Archived, non-current blank, and subagent rows drop out; the selected
+    // blank stays because the derivation shows it like any visible Session.
+    expect(rows.map(row => row.id)).toEqual([currentBlank.id, kept.id])
   })
 })
 
